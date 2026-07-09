@@ -1,11 +1,17 @@
 package com.roco.catcher.ui
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
+import android.graphics.Paint
 import android.os.Build
+import android.provider.Settings
+import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +30,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FormatListNumbered
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Numbers
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Pets
@@ -36,7 +44,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -49,6 +56,8 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -60,29 +69,39 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roco.catcher.model.CaptureTaskState
 import com.roco.catcher.model.HelperUser
 import com.roco.catcher.model.LowSpeedKind
-import com.roco.catcher.model.NotifyMode
 import com.roco.catcher.model.RatePoint
 import com.roco.catcher.model.TargetSearchResult
 import com.roco.catcher.model.TaskStatus
 import com.roco.catcher.monitor.RateCalculator
+import com.roco.catcher.notification.NotificationChannels
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.ceil
 import kotlin.math.max
 
 private val Ink = Color(0xFF141414)
@@ -95,6 +114,25 @@ private val MutedLine = Color(0xFFD7CABB)
 private val SuccessGreen = Color(0xFF2F9E66)
 private val TextMuted = Color(0xFF6F665C)
 
+private fun Modifier.clearFocusOnTapOutsideInputs(
+    focusManager: FocusManager,
+    inputFieldBounds: Map<String, Rect>,
+): Modifier = pointerInput(inputFieldBounds) {
+    detectTapGestures { offset ->
+        val tappedInput = inputFieldBounds.values.any { bounds -> bounds.contains(offset) }
+        if (!tappedInput) {
+            focusManager.clearFocus()
+        }
+    }
+}
+
+private fun Modifier.trackInputFieldBounds(
+    inputFieldBounds: MutableMap<String, Rect>,
+    key: String,
+): Modifier = onGloballyPositioned { coordinates ->
+    inputFieldBounds[key] = coordinates.boundsInRoot()
+}
+
 private enum class AppTab(val label: String, val icon: ImageVector) {
     CaptureTask("捕获任务", Icons.Filled.Timeline),
     Settings("设置", Icons.Filled.Settings),
@@ -106,8 +144,8 @@ interface MainActions {
     fun updateTargetQuery(value: String)
     fun selectTarget(result: com.roco.catcher.model.TargetSearchResult)
     fun selectUser(user: HelperUser)
-    fun saveSettings(helperIp: String, helperPortText: String, targetNotifyMode: NotifyMode, lowSpeedNotifyMode: NotifyMode)
-    fun testConnection(helperIp: String, helperPortText: String, targetNotifyMode: NotifyMode, lowSpeedNotifyMode: NotifyMode)
+    fun saveSettings(helperIp: String, helperPortText: String, targetNotifyEnabled: Boolean, lowSpeedNotifyEnabled: Boolean)
+    fun testConnection(helperIp: String, helperPortText: String, targetNotifyEnabled: Boolean, lowSpeedNotifyEnabled: Boolean)
     fun loadUsers()
     fun startTask()
     fun continueTask()
@@ -123,6 +161,8 @@ fun RocoCatcherApp(
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.CaptureTask) }
     val snackbarHostState = remember { SnackbarHostState() }
+    val focusManager = LocalFocusManager.current
+    val inputFieldBounds = remember { mutableMapOf<String, Rect>() }
 
     LaunchedEffect(uiState.message) {
         uiState.message?.let {
@@ -131,7 +171,12 @@ fun RocoCatcherApp(
         }
     }
 
+    LaunchedEffect(selectedTab) {
+        inputFieldBounds.clear()
+    }
+
     Scaffold(
+        modifier = Modifier.clearFocusOnTapOutsideInputs(focusManager, inputFieldBounds),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = { CompactBottomBar(selectedTab = selectedTab, onSelect = { selectedTab = it }) },
         containerColor = MaterialTheme.colorScheme.background,
@@ -148,8 +193,13 @@ fun RocoCatcherApp(
                     uiState = uiState,
                     actions = actions,
                     onOpenSettings = { selectedTab = AppTab.Settings },
+                    inputFieldBounds = inputFieldBounds,
                 )
-                AppTab.Settings -> SettingsScreen(uiState = uiState, actions = actions)
+                AppTab.Settings -> SettingsScreen(
+                    uiState = uiState,
+                    actions = actions,
+                    inputFieldBounds = inputFieldBounds,
+                )
             }
         }
     }
@@ -210,6 +260,7 @@ private fun MonitorScreen(
     uiState: MainUiState,
     actions: MainActions,
     onOpenSettings: () -> Unit,
+    inputFieldBounds: MutableMap<String, Rect>,
 ) {
     val scroll = rememberScrollState()
     val state = uiState.taskState
@@ -241,9 +292,9 @@ private fun MonitorScreen(
         }
 
         SectionCard(title = "任务配置") {
-            UserPicker(uiState, actions)
+            UserPicker(uiState, actions, inputFieldBounds)
             Spacer(Modifier.height(10.dp))
-            TargetSearchDropdown(uiState, actions)
+            TargetSearchDropdown(uiState, actions, inputFieldBounds)
             Spacer(Modifier.height(10.dp))
             LabeledField("目标数量") {
                 OutlinedTextField(
@@ -251,6 +302,7 @@ private fun MonitorScreen(
                     onValueChange = actions::updateTargetCount,
                     modifier = Modifier
                         .fillMaxWidth()
+                        .trackInputFieldBounds(inputFieldBounds, "target_count")
                         .semantics { contentDescription = "目标数量" },
                     placeholder = { Text("请输入目标数量") },
                     leadingIcon = { Icon(Icons.Filled.FormatListNumbered, contentDescription = null) },
@@ -266,6 +318,7 @@ private fun MonitorScreen(
                     onValueChange = actions::updateMinRate,
                     modifier = Modifier
                         .fillMaxWidth()
+                        .trackInputFieldBounds(inputFieldBounds, "min_rate")
                         .semantics { contentDescription = "最低速率" },
                     placeholder = { Text("只/分钟；0 表示关闭") },
                     leadingIcon = { Icon(Icons.Filled.Speed, contentDescription = null) },
@@ -291,6 +344,7 @@ private fun MonitorScreen(
             MetricRow("当前捕获", "${state.caughtCount}/$targetCount")
             MetricRow("平均速率", "${formatRate(averageRate)} / 分钟")
             MetricRow("当前速率", "${formatRate(currentRate)} / 分钟")
+            MetricRow("预计达成时间", estimatedCompletionLabel(targetCount, state.caughtCount, currentRate, uiState.clockMillis))
             MetricRow("低速提醒", lowSpeedLabel(state.lowSpeedState.kind))
         }
 
@@ -322,13 +376,18 @@ private fun MonitorScreen(
 }
 
 @Composable
-private fun UserPicker(uiState: MainUiState, actions: MainActions) {
+private fun UserPicker(
+    uiState: MainUiState,
+    actions: MainActions,
+    inputFieldBounds: MutableMap<String, Rect>,
+) {
     UserDropdown(
         users = uiState.users,
         selectedUser = uiState.selectedUser,
         loadingUsers = uiState.loadingUsers,
         onRequestLoad = actions::loadUsers,
         onSelect = actions::selectUser,
+        inputFieldBounds = inputFieldBounds,
         modifier = Modifier.fillMaxWidth(),
     )
 }
@@ -341,6 +400,7 @@ private fun UserDropdown(
     loadingUsers: Boolean,
     onRequestLoad: () -> Unit,
     onSelect: (HelperUser) -> Unit,
+    inputFieldBounds: MutableMap<String, Rect>,
     modifier: Modifier = Modifier,
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -360,6 +420,7 @@ private fun UserDropdown(
                 onValueChange = {},
                 modifier = Modifier
                     .fillMaxWidth()
+                    .trackInputFieldBounds(inputFieldBounds, "user_picker")
                     .menuAnchor()
                     .semantics { contentDescription = "选择小洛克" },
                 placeholder = { Text(if (loadingUsers) "读取小洛克中..." else "请选择小洛克") },
@@ -399,7 +460,11 @@ private fun UserDropdown(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TargetSearchDropdown(uiState: MainUiState, actions: MainActions) {
+private fun TargetSearchDropdown(
+    uiState: MainUiState,
+    actions: MainActions,
+    inputFieldBounds: MutableMap<String, Rect>,
+) {
     var expanded by remember { mutableStateOf(false) }
     val taskTargetName = uiState.taskState.config?.target?.displayName
     val selectedTargetName = uiState.selectedTarget?.displayName
@@ -419,6 +484,7 @@ private fun TargetSearchDropdown(uiState: MainUiState, actions: MainActions) {
                 },
                 modifier = Modifier
                     .fillMaxWidth()
+                    .trackInputFieldBounds(inputFieldBounds, "target_search")
                     .menuAnchor()
                     .semantics { contentDescription = "捕获目标" },
                 placeholder = { Text(selectedTargetName ?: "输入精灵或进化链名称") },
@@ -582,7 +648,7 @@ private fun LabeledField(
             text = label,
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Bold,
-            color = Ink,
+            color = TextMuted,
         )
         content()
     }
@@ -608,14 +674,6 @@ private fun appSecondaryButtonColors() = ButtonDefaults.outlinedButtonColors(
 private fun appSecondaryButtonBorder() = BorderStroke(1.dp, MutedLine)
 
 @Composable
-private fun appDarkPillButtonColors() = ButtonDefaults.outlinedButtonColors(
-    containerColor = ControlInk,
-    contentColor = Color.White,
-    disabledContainerColor = ControlInk,
-    disabledContentColor = Color(0xFFBEB8AD),
-)
-
-@Composable
 private fun appTextFieldColors() = OutlinedTextFieldDefaults.colors(
     focusedTextColor = Color.White,
     unfocusedTextColor = Color.White,
@@ -627,13 +685,13 @@ private fun appTextFieldColors() = OutlinedTextFieldDefaults.colors(
     errorContainerColor = ControlInk,
     cursorColor = WarmAmber,
     focusedBorderColor = WarmAmber,
-    unfocusedBorderColor = Color(0xFF6F675F),
-    disabledBorderColor = Color(0xFF514C45),
+    unfocusedBorderColor = ControlInk,
+    disabledBorderColor = ControlInk,
     errorBorderColor = MaterialTheme.colorScheme.error,
-    focusedLabelColor = WarmAmber,
+    focusedLabelColor = SoftCream,
     unfocusedLabelColor = SoftCream,
-    disabledLabelColor = Color(0xFFBEB8AD),
-    errorLabelColor = MaterialTheme.colorScheme.error,
+    disabledLabelColor = SoftCream,
+    errorLabelColor = SoftCream,
     focusedPlaceholderColor = Color(0xFFBEB8AD),
     unfocusedPlaceholderColor = Color(0xFFBEB8AD),
     disabledPlaceholderColor = Color(0xFF8D867C),
@@ -646,11 +704,15 @@ private fun appTextFieldColors() = OutlinedTextFieldDefaults.colors(
 )
 
 @Composable
-private fun SettingsScreen(uiState: MainUiState, actions: MainActions) {
+private fun SettingsScreen(
+    uiState: MainUiState,
+    actions: MainActions,
+    inputFieldBounds: MutableMap<String, Rect>,
+) {
     var ip by rememberSaveable { mutableStateOf(uiState.settings.helperIp) }
     var port by rememberSaveable { mutableStateOf(uiState.settings.helperPort?.toString().orEmpty()) }
-    var targetNotifyMode by rememberSaveable { mutableStateOf(uiState.settings.targetNotifyMode) }
-    var lowSpeedNotifyMode by rememberSaveable { mutableStateOf(uiState.settings.lowSpeedNotifyMode) }
+    var targetNotifyEnabled by rememberSaveable { mutableStateOf(uiState.settings.targetNotifyEnabled) }
+    var lowSpeedNotifyEnabled by rememberSaveable { mutableStateOf(uiState.settings.lowSpeedNotifyEnabled) }
     val context = LocalContext.current
     val notificationGranted = Build.VERSION.SDK_INT < 33 ||
         context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -658,8 +720,8 @@ private fun SettingsScreen(uiState: MainUiState, actions: MainActions) {
     LaunchedEffect(uiState.settings) {
         ip = uiState.settings.helperIp
         port = uiState.settings.helperPort?.toString().orEmpty()
-        targetNotifyMode = uiState.settings.targetNotifyMode
-        lowSpeedNotifyMode = uiState.settings.lowSpeedNotifyMode
+        targetNotifyEnabled = uiState.settings.targetNotifyEnabled
+        lowSpeedNotifyEnabled = uiState.settings.lowSpeedNotifyEnabled
     }
 
     Column(
@@ -668,42 +730,60 @@ private fun SettingsScreen(uiState: MainUiState, actions: MainActions) {
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        SectionCard(title = "洛克助手连接") {
-            LabeledField("IP 地址") {
+        SectionCard(title = "设置") {
+            LabeledField("洛克助手IP地址") {
                 OutlinedTextField(
                     value = ip,
                     onValueChange = { ip = it },
                     modifier = Modifier
                         .fillMaxWidth()
+                        .trackInputFieldBounds(inputFieldBounds, "helper_ip")
                         .semantics { contentDescription = "IP 地址" },
                     placeholder = { Text("请输入洛克助手 IP") },
+                    leadingIcon = { Icon(Icons.Filled.Language, contentDescription = null) },
                     singleLine = true,
                     shape = RoundedCornerShape(22.dp),
                     colors = appTextFieldColors(),
                 )
             }
             Spacer(Modifier.height(10.dp))
-            LabeledField("端口") {
+            LabeledField("洛克助手端口") {
                 OutlinedTextField(
                     value = port,
                     onValueChange = { port = it.filter(Char::isDigit) },
                     modifier = Modifier
                         .fillMaxWidth()
+                        .trackInputFieldBounds(inputFieldBounds, "helper_port")
                         .semantics { contentDescription = "端口" },
                     placeholder = { Text("请输入端口") },
+                    leadingIcon = { Icon(Icons.Filled.Numbers, contentDescription = null) },
                     singleLine = true,
                     shape = RoundedCornerShape(22.dp),
                     colors = appTextFieldColors(),
                 )
             }
             Spacer(Modifier.height(10.dp))
-            NotifyModeDropdown("目标达成通知", targetNotifyMode) { targetNotifyMode = it }
+            NotificationSettingField(
+                label = "目标达成提醒",
+                checked = targetNotifyEnabled,
+                onCheckedChange = { targetNotifyEnabled = it },
+                onOpenSoundSettings = {
+                    openNotificationChannelSettings(context, NotificationChannels.TARGET_REACHED)
+                },
+            )
             Spacer(Modifier.height(10.dp))
-            NotifyModeDropdown("低速提醒通知", lowSpeedNotifyMode) { lowSpeedNotifyMode = it }
+            NotificationSettingField(
+                label = "低速提醒",
+                checked = lowSpeedNotifyEnabled,
+                onCheckedChange = { lowSpeedNotifyEnabled = it },
+                onOpenSoundSettings = {
+                    openNotificationChannelSettings(context, NotificationChannels.LOW_SPEED)
+                },
+            )
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
-                    onClick = { actions.saveSettings(ip, port, targetNotifyMode, lowSpeedNotifyMode) },
+                    onClick = { actions.saveSettings(ip, port, targetNotifyEnabled, lowSpeedNotifyEnabled) },
                     modifier = Modifier.weight(1f),
                     colors = appPrimaryButtonColors(),
                     shape = RoundedCornerShape(18.dp),
@@ -711,7 +791,7 @@ private fun SettingsScreen(uiState: MainUiState, actions: MainActions) {
                     Text("保存")
                 }
                 OutlinedButton(
-                    onClick = { actions.testConnection(ip, port, targetNotifyMode, lowSpeedNotifyMode) },
+                    onClick = { actions.testConnection(ip, port, targetNotifyEnabled, lowSpeedNotifyEnabled) },
                     enabled = !uiState.loadingUsers,
                     modifier = Modifier.weight(1f),
                     colors = appSecondaryButtonColors(),
@@ -733,31 +813,77 @@ private fun SettingsScreen(uiState: MainUiState, actions: MainActions) {
 }
 
 @Composable
-private fun NotifyModeDropdown(label: String, value: NotifyMode, onChange: (NotifyMode) -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-    Column {
-        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Box {
-            OutlinedButton(
-                onClick = { expanded = true },
-                modifier = Modifier.fillMaxWidth(),
-                colors = appDarkPillButtonColors(),
-                border = BorderStroke(1.dp, ControlInk),
-                shape = RoundedCornerShape(22.dp),
+private fun NotificationSettingField(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    onOpenSoundSettings: () -> Unit,
+) {
+    LabeledField(label) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(58.dp)
+                .background(ControlInk, RoundedCornerShape(22.dp))
+                .padding(start = 16.dp, end = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(44.dp)
+                    .clickable(onClick = onOpenSoundSettings)
+                    .semantics { contentDescription = "$label 声音设置" },
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(value.label)
+                Icon(
+                    imageVector = Icons.Filled.Settings,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = SoftCream,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = "声音设置",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
-            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                NotifyMode.entries.forEach { mode ->
-                    DropdownMenuItem(
-                        text = { Text(mode.label) },
-                        onClick = {
-                            onChange(mode)
-                            expanded = false
-                        },
-                    )
-                }
-            }
+            Switch(
+                checked = checked,
+                onCheckedChange = onCheckedChange,
+                modifier = Modifier.semantics { contentDescription = label },
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color.White,
+                    checkedTrackColor = SuccessGreen,
+                    checkedBorderColor = SuccessGreen,
+                    uncheckedThumbColor = SoftCream,
+                    uncheckedTrackColor = Color(0xFF6F675F),
+                    uncheckedBorderColor = Color(0xFF6F675F),
+                ),
+            )
+        }
+    }
+}
+
+private fun openNotificationChannelSettings(context: Context, channelId: String) {
+    NotificationChannels.ensure(context)
+    val channelIntent = Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+        .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+        .putExtra(Settings.EXTRA_CHANNEL_ID, channelId)
+    val fallbackIntent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+        .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+
+    runCatching {
+        context.startActivity(channelIntent)
+    }.onFailure {
+        runCatching {
+            context.startActivity(fallbackIntent)
+        }.onFailure {
+            Toast.makeText(context, "无法打开通知设置", Toast.LENGTH_SHORT).show()
         }
     }
 }
@@ -796,7 +922,17 @@ private fun MetricRow(label: String, value: String) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label, color = TextMuted)
-        Text(value, color = Ink, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(
+            text = value,
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 12.dp),
+            color = Ink,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.End,
+        )
     }
 }
 
@@ -814,18 +950,60 @@ private fun RateLineChart(points: List<RatePoint>, modifier: Modifier = Modifier
 
     Box(modifier = modifier) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val left = 46.dp.toPx()
+            val left = 56.dp.toPx()
             val top = 16.dp.toPx()
-            val right = size.width - 10.dp.toPx()
-            val bottom = size.height - 34.dp.toPx()
+            val right = size.width - 14.dp.toPx()
+            val bottom = size.height - 40.dp.toPx()
+            val tickSize = 4.dp.toPx()
+            val labelGap = 8.dp.toPx()
+            val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = textColor.toArgb()
+                textSize = 11.dp.toPx()
+            }
             drawLine(axisColor, Offset(left, top), Offset(left, bottom), strokeWidth = 2f)
             drawLine(axisColor, Offset(left, bottom), Offset(right, bottom), strokeWidth = 2f)
 
             val visible = points.takeLast(24)
             if (visible.isEmpty()) return@Canvas
 
-            val maxRate = max(1.0, visible.maxOf { it.ratePerMinute })
+            val maxRate = chartMaxRate(visible.maxOf { it.ratePerMinute })
+            val gridColor = axisColor.copy(alpha = 0.45f)
+            listOf(0.0, maxRate / 2.0, maxRate).forEach { tick ->
+                val y = bottom - ((tick / maxRate).toFloat() * (bottom - top))
+                if (tick > 0.0) {
+                    drawLine(gridColor, Offset(left, y), Offset(right, y), strokeWidth = 1f)
+                }
+                drawLine(axisColor, Offset(left - tickSize, y), Offset(left, y), strokeWidth = 2f)
+                textPaint.textAlign = Paint.Align.RIGHT
+                drawContext.canvas.nativeCanvas.drawText(
+                    formatChartRateTick(tick),
+                    left - labelGap,
+                    y + textPaint.textSize / 3f,
+                    textPaint,
+                )
+            }
+
             val xStep = if (visible.size == 1) 0f else (right - left) / (visible.size - 1)
+            chartTimeTickIndices(visible.lastIndex).forEach { index ->
+                val point = visible[index]
+                val x = if (visible.size == 1) (left + right) / 2f else left + xStep * index
+                if (index != 0 && index != visible.lastIndex) {
+                    drawLine(gridColor, Offset(x, top), Offset(x, bottom), strokeWidth = 1f)
+                }
+                drawLine(axisColor, Offset(x, bottom), Offset(x, bottom + tickSize), strokeWidth = 2f)
+                textPaint.textAlign = when (index) {
+                    0 -> Paint.Align.LEFT
+                    visible.lastIndex -> Paint.Align.RIGHT
+                    else -> Paint.Align.CENTER
+                }
+                drawContext.canvas.nativeCanvas.drawText(
+                    formatChartTimeTick(point.displayTimeMillis),
+                    x,
+                    bottom + 22.dp.toPx(),
+                    textPaint,
+                )
+            }
+
             val path = Path()
             visible.forEachIndexed { index, point ->
                 val x = if (visible.size == 1) (left + right) / 2f else left + xStep * index
@@ -863,6 +1041,71 @@ private fun formatDuration(millis: Long): String {
 }
 
 private fun formatRate(value: Double): String = String.format(Locale.US, "%.1f", value)
+
+private fun estimatedCompletionLabel(
+    targetCount: Int,
+    caughtCount: Int,
+    currentRate: Double,
+    nowMillis: Long,
+): String {
+    val remaining = (targetCount - caughtCount).coerceAtLeast(0)
+    if (remaining == 0) return "已达成"
+    if (currentRate <= 0.0) return "无法估算"
+
+    val remainingMillis = ceil(remaining / currentRate * 60_000.0).toLong().coerceAtLeast(1_000L)
+    val estimatedAtMillis = nowMillis + remainingMillis
+    val timePattern = if (remainingMillis >= 24L * 60L * 60L * 1000L) "MM-dd HH:mm" else "HH:mm:ss"
+    val estimatedAt = SimpleDateFormat(timePattern, Locale.CHINA).format(Date(estimatedAtMillis))
+    return "$estimatedAt（${formatEstimatedRemaining(remainingMillis)}）"
+}
+
+private fun formatEstimatedRemaining(millis: Long): String {
+    val totalSeconds = ceil(millis / 1000.0).toLong().coerceAtLeast(1L)
+    val days = totalSeconds / 86_400L
+    val hours = (totalSeconds % 86_400L) / 3_600L
+    val minutes = (totalSeconds % 3_600L) / 60L
+    val seconds = totalSeconds % 60L
+    return when {
+        days > 0 -> "约${days}天${hours}小时"
+        hours > 0 -> "约${hours}小时${minutes}分"
+        minutes > 0 -> "约${minutes}分${seconds}秒"
+        else -> "约${seconds}秒"
+    }
+}
+
+private fun chartMaxRate(value: Double): Double {
+    val rate = max(1.0, value)
+    val step = when {
+        rate <= 5.0 -> 1.0
+        rate <= 20.0 -> 5.0
+        rate <= 50.0 -> 10.0
+        else -> 25.0
+    }
+    return ceil(rate / step) * step
+}
+
+private fun chartTimeTickIndices(lastIndex: Int): List<Int> {
+    return when {
+        lastIndex <= 0 -> listOf(0)
+        lastIndex == 1 -> listOf(0, 1)
+        else -> listOf(0, lastIndex / 2, lastIndex).distinct()
+    }
+}
+
+private fun formatChartRateTick(value: Double): String {
+    return if (value % 1.0 == 0.0) {
+        value.toInt().toString()
+    } else {
+        String.format(Locale.US, "%.1f", value)
+    }
+}
+
+private fun formatChartTimeTick(millis: Long): String {
+    val totalSeconds = millis / 1000L
+    val minutes = totalSeconds / 60L
+    val seconds = totalSeconds % 60L
+    return "$minutes:${seconds.toString().padStart(2, '0')}"
+}
 
 private fun lowSpeedLabel(kind: LowSpeedKind): String {
     return when (kind) {

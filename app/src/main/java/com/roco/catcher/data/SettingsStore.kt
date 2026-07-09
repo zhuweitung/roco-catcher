@@ -1,13 +1,13 @@
 package com.roco.catcher.data
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.roco.catcher.model.AppSettings
-import com.roco.catcher.model.NotifyMode
 import com.roco.catcher.model.RecentTaskSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -22,8 +22,8 @@ class SettingsStore(private val context: Context) {
         AppSettings(
             helperIp = prefs[KEY_IP].orEmpty(),
             helperPort = port,
-            targetNotifyMode = NotifyMode.fromName(prefs[KEY_TARGET_NOTIFY_MODE]),
-            lowSpeedNotifyMode = NotifyMode.fromName(prefs[KEY_LOW_SPEED_NOTIFY_MODE]),
+            targetNotifyEnabled = prefs[KEY_TARGET_NOTIFY_ENABLED] ?: true,
+            lowSpeedNotifyEnabled = prefs[KEY_LOW_SPEED_NOTIFY_ENABLED] ?: true,
         )
     }
 
@@ -46,8 +46,10 @@ class SettingsStore(private val context: Context) {
         context.settingsDataStore.edit { prefs ->
             prefs[KEY_IP] = settings.helperIp.trim()
             prefs[KEY_PORT] = settings.helperPort ?: 0
-            prefs[KEY_TARGET_NOTIFY_MODE] = settings.targetNotifyMode.name
-            prefs[KEY_LOW_SPEED_NOTIFY_MODE] = settings.lowSpeedNotifyMode.name
+            prefs[KEY_TARGET_NOTIFY_ENABLED] = settings.targetNotifyEnabled
+            prefs[KEY_LOW_SPEED_NOTIFY_ENABLED] = settings.lowSpeedNotifyEnabled
+            prefs.remove(KEY_TARGET_NOTIFY_MODE)
+            prefs.remove(KEY_LOW_SPEED_NOTIFY_MODE)
         }
     }
 
@@ -63,6 +65,8 @@ class SettingsStore(private val context: Context) {
     private companion object {
         val KEY_IP = stringPreferencesKey("helper_ip")
         val KEY_PORT = intPreferencesKey("helper_port")
+        val KEY_TARGET_NOTIFY_ENABLED = booleanPreferencesKey("target_notify_enabled")
+        val KEY_LOW_SPEED_NOTIFY_ENABLED = booleanPreferencesKey("low_speed_notify_enabled")
         val KEY_TARGET_NOTIFY_MODE = stringPreferencesKey("target_notify_mode")
         val KEY_LOW_SPEED_NOTIFY_MODE = stringPreferencesKey("low_speed_notify_mode")
         val KEY_RECENT_TARGET_COUNT = intPreferencesKey("recent_target_count")

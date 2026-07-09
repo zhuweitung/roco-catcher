@@ -37,14 +37,19 @@ object CaptureTaskManager {
     }
 
     @Synchronized
-    fun continueCurrentTask() {
-        val config = state.config ?: return
+    fun continueCurrentTask(config: CaptureTaskConfig? = null) {
+        val nextConfig = config ?: state.config ?: return
         val effective = effectiveRunMillisLocked(System.currentTimeMillis())
+        val targetReached = state.caughtCount >= nextConfig.targetCount
+        val nextTargetNotifySent = if (targetReached) state.targetNotifySent else false
         state = state.copy(
             status = TaskStatus.Connecting,
+            config = nextConfig,
             errorMessage = null,
             activeRunStartedAtMillis = null,
-            lowSpeedState = lowSpeedStateForResume(config, effective, state.targetReached),
+            targetNotifySent = nextTargetNotifySent,
+            targetReachedAtMillis = state.targetReachedAtMillis.takeIf { nextTargetNotifySent },
+            lowSpeedState = lowSpeedStateForResume(nextConfig, effective, targetReached),
         )
         notifyListenersLocked()
     }
@@ -116,7 +121,9 @@ object CaptureTaskManager {
     @Synchronized
     fun tick(alertSink: CaptureAlertSink) {
         if (state.status == TaskStatus.Running) {
-            evaluateLowSpeedLocked(System.currentTimeMillis(), alertSink)
+            val now = System.currentTimeMillis()
+            if (evaluateTargetReachedLocked(now, alertSink)) return
+            evaluateLowSpeedLocked(now, alertSink)
             notifyListenersLocked()
         }
     }
@@ -168,22 +175,25 @@ object CaptureTaskManager {
             rateHistory = RateCalculator.history(events),
         )
 
-        val reachedNow = gids.size >= config.targetCount && !next.targetNotifySent
-        if (reachedNow) {
-            next = next.copy(
-                targetNotifySent = true,
-                targetReachedAtMillis = now,
-                lowSpeedState = LowSpeedState(LowSpeedKind.SuppressedAfterTargetReached, effective),
-            )
-            state = next
-            notifyListenersLocked()
-            alertSink.onTargetReached(next)
-            return
-        }
-
         state = next
+        if (evaluateTargetReachedLocked(now, alertSink)) return
         evaluateLowSpeedLocked(now, alertSink)
         notifyListenersLocked()
+    }
+
+    private fun evaluateTargetReachedLocked(now: Long, alertSink: CaptureAlertSink): Boolean {
+        val config = state.config ?: return false
+        if (state.targetNotifySent || state.caughtCount < config.targetCount) return false
+
+        val effective = effectiveRunMillisLocked(now)
+        state = state.copy(
+            targetNotifySent = true,
+            targetReachedAtMillis = now,
+            lowSpeedState = LowSpeedState(LowSpeedKind.SuppressedAfterTargetReached, effective),
+        )
+        notifyListenersLocked()
+        alertSink.onTargetReached(state)
+        return true
     }
 
     private fun evaluateLowSpeedLocked(now: Long, alertSink: CaptureAlertSink) {

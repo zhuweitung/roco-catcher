@@ -11,7 +11,6 @@ import com.roco.catcher.model.CaptureTarget
 import com.roco.catcher.model.CaptureTaskConfig
 import com.roco.catcher.model.CaptureTaskState
 import com.roco.catcher.model.HelperUser
-import com.roco.catcher.model.NotifyMode
 import com.roco.catcher.model.TargetSearchResult
 import com.roco.catcher.monitor.CaptureMonitorService
 import com.roco.catcher.monitor.CaptureTaskManager
@@ -30,8 +29,8 @@ data class MainUiState(
     val users: List<HelperUser> = emptyList(),
     val selectedUser: HelperUser? = null,
     val selectedTarget: CaptureTarget? = null,
-    val targetCountText: String = "1",
-    val minRateText: String = "0",
+    val targetCountText: String = "",
+    val minRateText: String = "",
     val targetQuery: String = "",
     val targetResults: List<TargetSearchResult> = emptyList(),
     val taskState: CaptureTaskState = CaptureTaskState(),
@@ -127,8 +126,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application), M
     override fun saveSettings(
         helperIp: String,
         helperPortText: String,
-        targetNotifyMode: NotifyMode,
-        lowSpeedNotifyMode: NotifyMode,
+        targetNotifyEnabled: Boolean,
+        lowSpeedNotifyEnabled: Boolean,
     ) {
         val port = helperPortText.toIntOrNull()?.takeIf { it in 1..65535 }
         if (helperIp.isBlank() || port == null) {
@@ -141,8 +140,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application), M
                 AppSettings(
                     helperIp = helperIp.trim(),
                     helperPort = port,
-                    targetNotifyMode = targetNotifyMode,
-                    lowSpeedNotifyMode = lowSpeedNotifyMode,
+                    targetNotifyEnabled = targetNotifyEnabled,
+                    lowSpeedNotifyEnabled = lowSpeedNotifyEnabled,
                 ),
             )
             setMessage("设置已保存")
@@ -152,8 +151,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application), M
     override fun testConnection(
         helperIp: String,
         helperPortText: String,
-        targetNotifyMode: NotifyMode,
-        lowSpeedNotifyMode: NotifyMode,
+        targetNotifyEnabled: Boolean,
+        lowSpeedNotifyEnabled: Boolean,
     ) {
         val port = helperPortText.toIntOrNull()?.takeIf { it in 1..65535 }
         if (helperIp.isBlank() || port == null) {
@@ -164,8 +163,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application), M
         val candidate = AppSettings(
             helperIp = helperIp.trim(),
             helperPort = port,
-            targetNotifyMode = targetNotifyMode,
-            lowSpeedNotifyMode = lowSpeedNotifyMode,
+            targetNotifyEnabled = targetNotifyEnabled,
+            lowSpeedNotifyEnabled = lowSpeedNotifyEnabled,
         )
 
         _uiState.update { it.copy(loadingUsers = true, message = "正在测试连接...") }
@@ -241,8 +240,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application), M
     }
 
     override fun continueTask() {
-        CaptureTaskManager.continueCurrentTask()
+        val config = buildResumeTaskConfig() ?: return
+        viewModelScope.launch {
+            settingsStore.saveRecentTask(
+                targetCount = config.targetCount,
+                minRate = config.minRatePerMinute,
+                uid = config.user.uid,
+                targetName = config.target.displayName,
+            )
+        }
+        CaptureTaskManager.continueCurrentTask(config)
         CaptureMonitorService.start(getApplication())
+        _uiState.update {
+            it.copy(
+                targetCountText = config.targetCount.toString(),
+                minRateText = formatNumber(config.minRatePerMinute),
+                message = null,
+            )
+        }
     }
 
     override fun retryTask() {
@@ -291,6 +306,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application), M
         return CaptureTaskConfig(user, target, targetCount, minRate)
     }
 
+    private fun buildResumeTaskConfig(): CaptureTaskConfig? {
+        val state = _uiState.value
+        if (!state.settings.hasEndpoint) {
+            setMessage("请先配置 IP 和端口")
+            return null
+        }
+        val currentConfig = state.taskState.config
+        if (currentConfig == null) {
+            setMessage("没有可继续的捕获任务")
+            return null
+        }
+        val targetCount = state.targetCountText.toIntOrNull()?.takeIf { it > 0 }
+        if (targetCount == null) {
+            setMessage("目标数量必须大于 0")
+            return null
+        }
+        val minRate = state.minRateText.toDoubleOrNull()?.takeIf { it >= 0.0 }
+        if (minRate == null) {
+            setMessage("最低速率必须大于等于 0")
+            return null
+        }
+        return currentConfig.copy(
+            targetCount = targetCount,
+            minRatePerMinute = minRate,
+        )
+    }
+
     private fun findTargetByName(name: String): CaptureTarget? {
         return chains.searchTargets(name)
             .firstOrNull { it.target.displayName == name }
@@ -305,4 +347,3 @@ class MainViewModel(application: Application) : AndroidViewModel(application), M
         return if (value % 1.0 == 0.0) value.toInt().toString() else "%.1f".format(value)
     }
 }
-

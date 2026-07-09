@@ -2,23 +2,11 @@ package com.roco.catcher.model
 
 import kotlinx.serialization.Serializable
 
-enum class NotifyMode(val label: String) {
-    Sound("响铃"),
-    Vibrate("振动"),
-    SoundAndVibrate("响铃+振动");
-
-    companion object {
-        fun fromName(value: String?): NotifyMode {
-            return entries.firstOrNull { it.name == value } ?: SoundAndVibrate
-        }
-    }
-}
-
 data class AppSettings(
     val helperIp: String = "",
     val helperPort: Int? = null,
-    val targetNotifyMode: NotifyMode = NotifyMode.SoundAndVibrate,
-    val lowSpeedNotifyMode: NotifyMode = NotifyMode.Vibrate,
+    val targetNotifyEnabled: Boolean = true,
+    val lowSpeedNotifyEnabled: Boolean = true,
 ) {
     val hasEndpoint: Boolean
         get() = helperIp.isNotBlank() && helperPort != null && helperPort in 1..65535

@@ -27,8 +27,9 @@ class CaptureNotifier(
 
     override fun onTargetReached(state: CaptureTaskState) {
         val settings = settingsProvider()
+        if (!settings.targetNotifyEnabled) return
         val config = state.config ?: return
-        val notification = baseBuilder(NotificationChannels.targetReached(settings.targetNotifyMode))
+        val notification = baseBuilder(NotificationChannels.TARGET_REACHED)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle("捕获目标已达成")
             .setContentText("${config.target.displayName} 已捕获 ${state.caughtCount}/${config.targetCount}")
@@ -44,10 +45,11 @@ class CaptureNotifier(
 
     override fun onLowSpeed(state: CaptureTaskState, currentRate: Double) {
         val settings = settingsProvider()
+        if (!settings.lowSpeedNotifyEnabled) return
         val config = state.config ?: return
         val rate = formatRate(currentRate)
         val minRate = formatRate(config.minRatePerMinute)
-        val notification = baseBuilder(NotificationChannels.lowSpeed(settings.lowSpeedNotifyMode))
+        val notification = baseBuilder(NotificationChannels.LOW_SPEED)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setContentTitle("捕获速率偏低")
             .setContentText("${config.target.displayName} 当前 $rate/分钟，低于 $minRate/分钟")
