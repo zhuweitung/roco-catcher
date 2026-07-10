@@ -3,14 +3,14 @@ package com.roco.catcher.monitor
 import com.roco.catcher.model.CaptureTaskConfig
 import com.roco.catcher.model.CaptureTaskState
 import com.roco.catcher.model.CaughtPetEvent
+import com.roco.catcher.model.LOW_SPEED_PENDING_MILLIS
+import com.roco.catcher.model.LOW_SPEED_WARM_UP_MILLIS
 import com.roco.catcher.model.LowSpeedKind
 import com.roco.catcher.model.LowSpeedState
 import com.roco.catcher.model.TaskStatus
 import java.util.concurrent.CopyOnWriteArrayList
 
 object CaptureTaskManager {
-    private const val WARM_UP_MILLIS = 60_000L
-    private const val LOW_SPEED_PENDING_MILLIS = 30_000L
     private const val MAX_EVENT_HISTORY = 500
 
     private val listeners = CopyOnWriteArrayList<(CaptureTaskState) -> Unit>()
@@ -222,7 +222,7 @@ object CaptureTaskManager {
         val next = when (current.kind) {
             LowSpeedKind.Disabled -> LowSpeedState(LowSpeedKind.WarmingUp, effective)
             LowSpeedKind.WarmingUp -> {
-                if (effective - current.startedEffectiveMillis < WARM_UP_MILLIS) {
+                if (effective - current.startedEffectiveMillis < LOW_SPEED_WARM_UP_MILLIS) {
                     current
                 } else if (currentRate < minRate) {
                     LowSpeedState(LowSpeedKind.Pending, effective)

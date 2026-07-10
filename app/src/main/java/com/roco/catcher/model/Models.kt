@@ -102,6 +102,9 @@ enum class LowSpeedKind {
     SuppressedAfterTargetReached,
 }
 
+const val LOW_SPEED_WARM_UP_MILLIS = 60_000L
+const val LOW_SPEED_PENDING_MILLIS = 30_000L
+
 data class LowSpeedState(
     val kind: LowSpeedKind = LowSpeedKind.Disabled,
     val startedEffectiveMillis: Long = 0L,

@@ -68,9 +68,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -92,9 +92,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roco.catcher.model.CaptureTaskState
 import com.roco.catcher.model.HelperUser
+import com.roco.catcher.model.LOW_SPEED_PENDING_MILLIS
+import com.roco.catcher.model.LOW_SPEED_WARM_UP_MILLIS
 import com.roco.catcher.model.LowSpeedKind
+import com.roco.catcher.model.LowSpeedState
 import com.roco.catcher.model.RatePoint
-import com.roco.catcher.model.TargetSearchResult
 import com.roco.catcher.model.TaskStatus
 import com.roco.catcher.monitor.RateCalculator
 import com.roco.catcher.notification.NotificationChannels
@@ -345,7 +347,7 @@ private fun MonitorScreen(
             MetricRow("平均速率", "${formatRate(averageRate)} / 分钟")
             MetricRow("当前速率", "${formatRate(currentRate)} / 分钟")
             MetricRow("预计达成时间", estimatedCompletionLabel(targetCount, state.caughtCount, currentRate, uiState.clockMillis))
-            MetricRow("低速提醒", lowSpeedLabel(state.lowSpeedState.kind))
+            MetricRow("低速提醒", lowSpeedLabel(state.lowSpeedState, effectiveRunMillis))
         }
 
         SectionCard(title = "历史速率") {
@@ -1107,13 +1109,40 @@ private fun formatChartTimeTick(millis: Long): String {
     return "$minutes:${seconds.toString().padStart(2, '0')}"
 }
 
-private fun lowSpeedLabel(kind: LowSpeedKind): String {
-    return when (kind) {
+private fun lowSpeedLabel(state: LowSpeedState, effectiveRunMillis: Long): String {
+    return when (state.kind) {
         LowSpeedKind.Disabled -> "关闭"
-        LowSpeedKind.WarmingUp -> "预热中"
+        LowSpeedKind.WarmingUp -> lowSpeedCountdownLabel(
+            label = "预热中",
+            expiredLabel = "即将结束",
+            durationMillis = LOW_SPEED_WARM_UP_MILLIS,
+            state = state,
+            effectiveRunMillis = effectiveRunMillis,
+        )
         LowSpeedKind.Normal -> "正常"
-        LowSpeedKind.Pending -> "低速确认中"
+        LowSpeedKind.Pending -> lowSpeedCountdownLabel(
+            label = "低速确认中",
+            expiredLabel = "即将触发",
+            durationMillis = LOW_SPEED_PENDING_MILLIS,
+            state = state,
+            effectiveRunMillis = effectiveRunMillis,
+        )
         LowSpeedKind.Alerted -> "已提醒，等待恢复"
         LowSpeedKind.SuppressedAfterTargetReached -> "达标后停止"
     }
+}
+
+private fun lowSpeedCountdownLabel(
+    label: String,
+    expiredLabel: String,
+    durationMillis: Long,
+    state: LowSpeedState,
+    effectiveRunMillis: Long,
+): String {
+    val elapsedMillis = (effectiveRunMillis - state.startedEffectiveMillis).coerceAtLeast(0L)
+    val remainingMillis = (durationMillis - elapsedMillis).coerceAtLeast(0L)
+    if (remainingMillis == 0L) return "$label（$expiredLabel）"
+
+    val remainingSeconds = (remainingMillis + 999L) / 1_000L
+    return "$label（剩余 ${remainingSeconds} 秒）"
 }
