@@ -344,15 +344,16 @@ private fun MonitorScreen(
         SectionCard(title = "捕获统计") {
             val targetCount = state.config?.targetCount ?: uiState.targetCountText.toIntOrNull() ?: 1
             MetricRow("当前捕获", "${state.caughtCount}/$targetCount")
-            MetricRow("平均速率", "${formatRate(averageRate)} / 分钟")
-            MetricRow("当前速率", "${formatRate(currentRate)} / 分钟")
-            MetricRow("预计达成时间", estimatedCompletionLabel(targetCount, state.caughtCount, currentRate, uiState.clockMillis))
+            MetricRow("平均速率", "${formatRate(averageRate)}/分钟")
+            MetricRow("当前速率", "${formatRate(currentRate)}/分钟")
+            MetricRow("预计时间", estimatedCompletionLabel(targetCount, state.caughtCount, currentRate, uiState.clockMillis))
             MetricRow("低速提醒", lowSpeedLabel(state.lowSpeedState, effectiveRunMillis))
         }
 
         SectionCard(title = "历史速率") {
             RateLineChart(
                 points = state.rateHistory,
+                effectiveRunMillis = effectiveRunMillis,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(220.dp)
@@ -944,15 +945,22 @@ private fun WarningText(text: String) {
 }
 
 @Composable
-private fun RateLineChart(points: List<RatePoint>, modifier: Modifier = Modifier) {
+private fun RateLineChart(
+    points: List<RatePoint>,
+    effectiveRunMillis: Long,
+    modifier: Modifier = Modifier,
+) {
     val lineColor = WarmAmberDeep
     val dotColor = SuccessGreen
     val axisColor = MutedLine
     val textColor = TextMuted
+    val windowEndMillis = effectiveRunMillis.coerceAtLeast(points.lastOrNull()?.displayTimeMillis ?: 0L)
+    val windowStartMillis = (windowEndMillis - RATE_CHART_WINDOW_MILLIS).coerceAtLeast(0L)
+    val windowDurationMillis = (windowEndMillis - windowStartMillis).coerceAtLeast(1L)
+    val visible = points.filter { it.displayTimeMillis in windowStartMillis..windowEndMillis }
 
     Box(modifier = modifier) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val left = 56.dp.toPx()
             val top = 16.dp.toPx()
             val right = size.width - 14.dp.toPx()
             val bottom = size.height - 40.dp.toPx()
@@ -962,15 +970,16 @@ private fun RateLineChart(points: List<RatePoint>, modifier: Modifier = Modifier
                 color = textColor.toArgb()
                 textSize = 11.dp.toPx()
             }
+            val maxRate = chartMaxRate(visible.maxOfOrNull { it.ratePerMinute } ?: 0.0)
+            val rateTicks = listOf(0.0, maxRate / 2.0, maxRate)
+            val widestRateLabel = rateTicks.maxOf { textPaint.measureText(formatChartRateTick(it)) }
+            val left = max(24.dp.toPx(), widestRateLabel + labelGap + 2.dp.toPx())
+            val gridColor = axisColor.copy(alpha = 0.45f)
+
             drawLine(axisColor, Offset(left, top), Offset(left, bottom), strokeWidth = 2f)
             drawLine(axisColor, Offset(left, bottom), Offset(right, bottom), strokeWidth = 2f)
 
-            val visible = points.takeLast(24)
-            if (visible.isEmpty()) return@Canvas
-
-            val maxRate = chartMaxRate(visible.maxOf { it.ratePerMinute })
-            val gridColor = axisColor.copy(alpha = 0.45f)
-            listOf(0.0, maxRate / 2.0, maxRate).forEach { tick ->
+            rateTicks.forEach { tick ->
                 val y = bottom - ((tick / maxRate).toFloat() * (bottom - top))
                 if (tick > 0.0) {
                     drawLine(gridColor, Offset(left, y), Offset(right, y), strokeWidth = 1f)
@@ -985,21 +994,19 @@ private fun RateLineChart(points: List<RatePoint>, modifier: Modifier = Modifier
                 )
             }
 
-            val xStep = if (visible.size == 1) 0f else (right - left) / (visible.size - 1)
-            chartTimeTickIndices(visible.lastIndex).forEach { index ->
-                val point = visible[index]
-                val x = if (visible.size == 1) (left + right) / 2f else left + xStep * index
-                if (index != 0 && index != visible.lastIndex) {
+            listOf(0f, 0.5f, 1f).forEach { fraction ->
+                val x = left + (right - left) * fraction
+                if (fraction > 0f && fraction < 1f) {
                     drawLine(gridColor, Offset(x, top), Offset(x, bottom), strokeWidth = 1f)
                 }
                 drawLine(axisColor, Offset(x, bottom), Offset(x, bottom + tickSize), strokeWidth = 2f)
-                textPaint.textAlign = when (index) {
-                    0 -> Paint.Align.LEFT
-                    visible.lastIndex -> Paint.Align.RIGHT
+                textPaint.textAlign = when (fraction) {
+                    0f -> Paint.Align.LEFT
+                    1f -> Paint.Align.RIGHT
                     else -> Paint.Align.CENTER
                 }
                 drawContext.canvas.nativeCanvas.drawText(
-                    formatChartTimeTick(point.displayTimeMillis),
+                    formatChartMinuteTick(windowDurationMillis, fraction),
                     x,
                     bottom + 22.dp.toPx(),
                     textPaint,
@@ -1008,7 +1015,9 @@ private fun RateLineChart(points: List<RatePoint>, modifier: Modifier = Modifier
 
             val path = Path()
             visible.forEachIndexed { index, point ->
-                val x = if (visible.size == 1) (left + right) / 2f else left + xStep * index
+                val fraction = ((point.displayTimeMillis - windowStartMillis).toFloat() / windowDurationMillis)
+                    .coerceIn(0f, 1f)
+                val x = left + (right - left) * fraction
                 val y = bottom - ((point.ratePerMinute / maxRate).toFloat() * (bottom - top))
                 if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
                 drawCircle(dotColor, radius = 5.dp.toPx(), center = Offset(x, y))
@@ -1019,7 +1028,7 @@ private fun RateLineChart(points: List<RatePoint>, modifier: Modifier = Modifier
                 style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
             )
         }
-        if (points.isEmpty()) {
+        if (visible.isEmpty()) {
             Text(
                 "暂无速率数据",
                 color = textColor,
@@ -1056,7 +1065,7 @@ private fun estimatedCompletionLabel(
 
     val remainingMillis = ceil(remaining / currentRate * 60_000.0).toLong().coerceAtLeast(1_000L)
     val estimatedAtMillis = nowMillis + remainingMillis
-    val timePattern = if (remainingMillis >= 24L * 60L * 60L * 1000L) "MM-dd HH:mm" else "HH:mm:ss"
+    val timePattern = if (remainingMillis >= 24L * 60L * 60L * 1000L) "MM-dd HH:mm" else "HH:mm"
     val estimatedAt = SimpleDateFormat(timePattern, Locale.CHINA).format(Date(estimatedAtMillis))
     return "$estimatedAt（${formatEstimatedRemaining(remainingMillis)}）"
 }
@@ -1070,7 +1079,7 @@ private fun formatEstimatedRemaining(millis: Long): String {
     return when {
         days > 0 -> "约${days}天${hours}小时"
         hours > 0 -> "约${hours}小时${minutes}分"
-        minutes > 0 -> "约${minutes}分${seconds}秒"
+        minutes > 0 -> "约${minutes}分"
         else -> "约${seconds}秒"
     }
 }
@@ -1086,14 +1095,6 @@ private fun chartMaxRate(value: Double): Double {
     return ceil(rate / step) * step
 }
 
-private fun chartTimeTickIndices(lastIndex: Int): List<Int> {
-    return when {
-        lastIndex <= 0 -> listOf(0)
-        lastIndex == 1 -> listOf(0, 1)
-        else -> listOf(0, lastIndex / 2, lastIndex).distinct()
-    }
-}
-
 private fun formatChartRateTick(value: Double): String {
     return if (value % 1.0 == 0.0) {
         value.toInt().toString()
@@ -1102,11 +1103,11 @@ private fun formatChartRateTick(value: Double): String {
     }
 }
 
-private fun formatChartTimeTick(millis: Long): String {
-    val totalSeconds = millis / 1000L
-    val minutes = totalSeconds / 60L
-    val seconds = totalSeconds % 60L
-    return "$minutes:${seconds.toString().padStart(2, '0')}"
+private const val RATE_CHART_WINDOW_MILLIS = 30L * 60_000L
+
+private fun formatChartMinuteTick(windowDurationMillis: Long, fraction: Float): String {
+    val minutes = (windowDurationMillis * fraction / 60_000f).toInt()
+    return minutes.coerceIn(0, 30).toString()
 }
 
 private fun lowSpeedLabel(state: LowSpeedState, effectiveRunMillis: Long): String {
