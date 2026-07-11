@@ -9,6 +9,7 @@ import kotlinx.serialization.json.jsonObject
 data class PetChangedPayload(
     val baseConfId: String,
     val gid: Long,
+    val occurredAtMillis: Long?,
 )
 
 object CaptureEventParser {
@@ -27,7 +28,15 @@ object CaptureEventParser {
 
         val baseConfId = data.stringValue("base_conf_id")?.takeIf { it.isNotBlank() } ?: return null
         val gid = data.longValue("gid")?.takeIf { it > 0L } ?: return null
-        return PetChangedPayload(baseConfId = baseConfId, gid = gid)
+        val occurredAtMillis = (
+            data.longValue("add_time")
+                ?: data.objectValue("together_catch_info")?.longValue("catch_time")
+            )?.toEpochMillis()
+        return PetChangedPayload(
+            baseConfId = baseConfId,
+            gid = gid,
+            occurredAtMillis = occurredAtMillis,
+        )
     }
 
     private fun JsonObject.stringValue(key: String): String? {
@@ -40,8 +49,19 @@ object CaptureEventParser {
         return stringValue(key)?.toLongOrNull()
     }
 
+    private fun JsonObject.objectValue(key: String): JsonObject? {
+        return this[key]?.let { runCatching { it.jsonObject }.getOrNull() }
+    }
+
+    private fun Long.toEpochMillis(): Long? {
+        if (this <= 0L) return null
+        return if (this < MILLIS_TIMESTAMP_THRESHOLD) this * 1000L else this
+    }
+
     private val json = Json {
         ignoreUnknownKeys = true
     }
+
+    private const val MILLIS_TIMESTAMP_THRESHOLD = 100_000_000_000L
 }
 

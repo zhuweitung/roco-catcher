@@ -19,7 +19,7 @@ class HelperSseClient(
 ) {
     interface Listener {
         fun onOpen()
-        fun onEvent(rawJson: String, eventName: String?)
+        fun onEvent(rawJson: String, eventName: String?, eventId: String?)
         fun onClosed()
         fun onFailure(message: String?)
     }
@@ -53,7 +53,7 @@ class HelperSseClient(
                         type: String?,
                         data: String,
                     ) {
-                        listener.onEvent(data, type)
+                        listener.onEvent(data, type, id)
                     }
 
                     override fun onClosed(eventSource: EventSource) {

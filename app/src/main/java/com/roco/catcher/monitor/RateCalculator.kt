@@ -12,16 +12,16 @@ object RateCalculator {
         return caughtCount / minutes
     }
 
-    fun currentRate(events: List<CaughtPetEvent>, effectiveRunMillis: Long): Double {
+    fun currentRate(events: List<CaughtPetEvent>, nowMillis: Long): Double {
         if (events.isEmpty()) return 0.0
-        val start = (effectiveRunMillis - ONE_MINUTE_MILLIS).coerceAtLeast(0L)
-        return events.count { it.effectiveRunMillis in start..effectiveRunMillis }.toDouble()
+        val start = (nowMillis - ONE_MINUTE_MILLIS).coerceAtLeast(0L)
+        return events.count { it.caughtAtMillis in start..nowMillis }.toDouble()
     }
 
     fun history(events: List<CaughtPetEvent>): List<RatePoint> {
         if (events.isEmpty()) return emptyList()
 
-        val grouped = events.groupBy { it.effectiveRunMillis / ONE_MINUTE_MILLIS }
+        val grouped = events.groupBy { it.caughtAtMillis / ONE_MINUTE_MILLIS }
         return grouped.keys.sorted().map { bucket ->
             val count = grouped[bucket].orEmpty().size
             RatePoint(

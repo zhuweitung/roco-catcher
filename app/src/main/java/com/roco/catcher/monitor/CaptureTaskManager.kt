@@ -1,5 +1,6 @@
 package com.roco.catcher.monitor
 
+import android.util.Log
 import com.roco.catcher.model.CaptureTaskConfig
 import com.roco.catcher.model.CaptureTaskState
 import com.roco.catcher.model.CaughtPetEvent
@@ -12,12 +13,33 @@ import java.util.concurrent.CopyOnWriteArrayList
 
 object CaptureTaskManager {
     private const val MAX_EVENT_HISTORY = 500
+    private const val TASK_START_TOLERANCE_MILLIS = 1_000L
+    private const val MAX_FUTURE_EVENT_SKEW_MILLIS = 5L * 60_000L
+    private const val TAG = "CaptureTaskManager"
 
     private val listeners = CopyOnWriteArrayList<(CaptureTaskState) -> Unit>()
     private var state = CaptureTaskState()
 
     @Synchronized
     fun currentState(): CaptureTaskState = state
+
+    @Synchronized
+    fun restoreTask(restored: CaptureTaskState, resumeMonitoring: Boolean): Boolean {
+        if (restored.config == null || restored.taskStartedAtMillis == null) return false
+        val now = System.currentTimeMillis()
+        val activeElapsed = restored.activeRunStartedAtMillis
+            ?.let { (now - it).coerceAtLeast(0L) }
+            ?: 0L
+        state = restored.copy(
+            status = if (resumeMonitoring) TaskStatus.Connecting else restored.status,
+            activeRunStartedAtMillis = null,
+            accumulatedRunMillis = restored.accumulatedRunMillis + activeElapsed,
+            rateHistory = RateCalculator.history(restored.caughtEvents),
+            errorMessage = if (resumeMonitoring) null else restored.errorMessage,
+        )
+        notifyListenersLocked()
+        return true
+    }
 
     fun addListener(listener: (CaptureTaskState) -> Unit): () -> Unit {
         listeners.add(listener)
@@ -27,10 +49,12 @@ object CaptureTaskManager {
 
     @Synchronized
     fun startNewTask(config: CaptureTaskConfig) {
+        val now = System.currentTimeMillis()
         val initialLowSpeed = initialLowSpeedState(config, 0L)
         state = CaptureTaskState(
             status = TaskStatus.Connecting,
             config = config,
+            taskStartedAtMillis = now,
             lowSpeedState = initialLowSpeed,
         )
         notifyListenersLocked()
@@ -111,11 +135,26 @@ object CaptureTaskManager {
     fun handleRawEvent(
         rawJson: String,
         eventName: String?,
+        eventId: String?,
+        connectionGeneration: Long,
         petNameResolver: (String) -> String?,
         alertSink: CaptureAlertSink,
     ) {
         val payload = CaptureEventParser.parse(rawJson, eventName) ?: return
-        handlePetChanged(payload.baseConfId, payload.gid, petNameResolver, alertSink)
+        val receivedAtMillis = System.currentTimeMillis()
+        val occurredAtMillis = payload.occurredAtMillis
+            ?.takeIf { it <= receivedAtMillis + MAX_FUTURE_EVENT_SKEW_MILLIS }
+            ?: receivedAtMillis
+        handlePetChanged(
+            baseConfId = payload.baseConfId,
+            gid = payload.gid,
+            occurredAtMillis = occurredAtMillis,
+            receivedAtMillis = receivedAtMillis,
+            eventId = eventId,
+            connectionGeneration = connectionGeneration,
+            petNameResolver = petNameResolver,
+            alertSink = alertSink,
+        )
     }
 
     @Synchronized
@@ -142,7 +181,7 @@ object CaptureTaskManager {
 
     fun currentRate(nowMillis: Long = System.currentTimeMillis()): Double {
         synchronized(this) {
-            return RateCalculator.currentRate(state.caughtEvents, effectiveRunMillisLocked(nowMillis))
+            return RateCalculator.currentRate(state.caughtEvents, nowMillis)
         }
     }
 
@@ -150,6 +189,10 @@ object CaptureTaskManager {
     private fun handlePetChanged(
         baseConfId: String,
         gid: Long,
+        occurredAtMillis: Long,
+        receivedAtMillis: Long,
+        eventId: String?,
+        connectionGeneration: Long,
         petNameResolver: (String) -> String?,
         alertSink: CaptureAlertSink,
     ) {
@@ -157,27 +200,44 @@ object CaptureTaskManager {
         if (state.status != TaskStatus.Running) return
         if (!config.target.targetBaseConfIds.contains(baseConfId)) return
         if (state.caughtGids.contains(gid)) return
+        val taskStartedAtMillis = state.taskStartedAtMillis ?: return
+        if (occurredAtMillis < taskStartedAtMillis - TASK_START_TOLERANCE_MILLIS) {
+            Log.d(
+                TAG,
+                "Ignored pre-task event gid=$gid occurredAt=$occurredAtMillis " +
+                    "receivedAt=$receivedAtMillis eventId=$eventId generation=$connectionGeneration",
+            )
+            return
+        }
 
-        val now = System.currentTimeMillis()
-        val effective = effectiveRunMillisLocked(now)
+        val deliveryDelayMillis = (receivedAtMillis - occurredAtMillis).coerceAtLeast(0L)
+        val effective = (effectiveRunMillisLocked(receivedAtMillis) - deliveryDelayMillis).coerceAtLeast(0L)
         val event = CaughtPetEvent(
             gid = gid,
             baseConfId = baseConfId,
             petName = petNameResolver(baseConfId),
-            caughtAtMillis = now,
+            caughtAtMillis = occurredAtMillis,
+            receivedAtMillis = receivedAtMillis,
             effectiveRunMillis = effective,
         )
-        val events = (state.caughtEvents + event).takeLast(MAX_EVENT_HISTORY)
+        val events = (state.caughtEvents + event)
+            .sortedWith(compareBy(CaughtPetEvent::caughtAtMillis, CaughtPetEvent::gid))
+            .takeLast(MAX_EVENT_HISTORY)
         val gids = state.caughtGids + gid
-        var next = state.copy(
+        val next = state.copy(
             caughtGids = gids,
             caughtEvents = events,
             rateHistory = RateCalculator.history(events),
         )
 
         state = next
-        if (evaluateTargetReachedLocked(now, alertSink)) return
-        evaluateLowSpeedLocked(now, alertSink)
+        Log.d(
+            TAG,
+            "Accepted event gid=$gid occurredAt=$occurredAtMillis receivedAt=$receivedAtMillis " +
+                "delayMs=$deliveryDelayMillis eventId=$eventId generation=$connectionGeneration",
+        )
+        if (evaluateTargetReachedLocked(receivedAtMillis, alertSink)) return
+        evaluateLowSpeedLocked(receivedAtMillis, alertSink)
         notifyListenersLocked()
     }
 
@@ -217,7 +277,7 @@ object CaptureTaskManager {
             return
         }
 
-        val currentRate = RateCalculator.currentRate(state.caughtEvents, effective)
+        val currentRate = RateCalculator.currentRate(state.caughtEvents, now)
         val current = state.lowSpeedState
         val next = when (current.kind) {
             LowSpeedKind.Disabled -> LowSpeedState(LowSpeedKind.WarmingUp, effective)

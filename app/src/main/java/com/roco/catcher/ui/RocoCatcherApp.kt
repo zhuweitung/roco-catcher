@@ -4,7 +4,9 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.graphics.Paint
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
@@ -60,6 +62,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -90,6 +93,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.roco.catcher.model.CaptureTaskState
 import com.roco.catcher.model.HelperUser
 import com.roco.catcher.model.LOW_SPEED_PENDING_MILLIS
@@ -268,7 +274,7 @@ private fun MonitorScreen(
     val state = uiState.taskState
     val effectiveRunMillis = effectiveRunMillis(state, uiState.clockMillis)
     val averageRate = RateCalculator.averageRate(state.caughtCount, effectiveRunMillis)
-    val currentRate = RateCalculator.currentRate(state.caughtEvents, effectiveRunMillis)
+    val currentRate = RateCalculator.currentRate(state.caughtEvents, uiState.clockMillis)
 
     Column(
         modifier = Modifier
@@ -353,7 +359,7 @@ private fun MonitorScreen(
         SectionCard(title = "历史速率") {
             RateLineChart(
                 points = state.rateHistory,
-                effectiveRunMillis = effectiveRunMillis,
+                nowMillis = uiState.clockMillis,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(220.dp)
@@ -717,8 +723,20 @@ private fun SettingsScreen(
     var targetNotifyEnabled by rememberSaveable { mutableStateOf(uiState.settings.targetNotifyEnabled) }
     var lowSpeedNotifyEnabled by rememberSaveable { mutableStateOf(uiState.settings.lowSpeedNotifyEnabled) }
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val notificationGranted = Build.VERSION.SDK_INT < 33 ||
         context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    var batteryOptimizationIgnored by remember { mutableStateOf(isIgnoringBatteryOptimizations(context)) }
+
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                batteryOptimizationIgnored = isIgnoringBatteryOptimizations(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     LaunchedEffect(uiState.settings) {
         ip = uiState.settings.helperIp
@@ -806,12 +824,61 @@ private fun SettingsScreen(
             }
         }
 
+        SectionCard(title = "后台运行") {
+            MetricRow(
+                label = "电池优化",
+                value = if (batteryOptimizationIgnored) "不限制" else "受限制",
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = {
+                    openBatteryOptimizationSettings(
+                        context = context,
+                        alreadyIgnored = batteryOptimizationIgnored,
+                    )
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .semantics { contentDescription = "后台运行设置" },
+                colors = appSecondaryButtonColors(),
+                border = appSecondaryButtonBorder(),
+                shape = RoundedCornerShape(18.dp),
+            ) {
+                Icon(Icons.Filled.Settings, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("后台运行设置")
+            }
+        }
+
         if (!notificationGranted) {
             SectionCard(title = "通知权限") {
                 WarningText("通知权限未开启，目标达成和低速提醒可能无法显示。")
                 Text("请在系统设置中为本 App 开启通知权限。", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+    }
+}
+
+private fun isIgnoringBatteryOptimizations(context: Context): Boolean {
+    val powerManager = context.getSystemService(PowerManager::class.java)
+    return powerManager.isIgnoringBatteryOptimizations(context.packageName)
+}
+
+private fun openBatteryOptimizationSettings(context: Context, alreadyIgnored: Boolean) {
+    val packageUri = Uri.parse("package:${context.packageName}")
+    val primaryIntent = if (alreadyIgnored) {
+        Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+    } else {
+        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, packageUri)
+    }
+    val fallbackIntent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+
+    runCatching {
+        context.startActivity(primaryIntent)
+    }.onFailure {
+        runCatching { context.startActivity(fallbackIntent) }
+            .onFailure { Toast.makeText(context, "无法打开后台运行设置", Toast.LENGTH_SHORT).show() }
     }
 }
 
@@ -947,14 +1014,14 @@ private fun WarningText(text: String) {
 @Composable
 private fun RateLineChart(
     points: List<RatePoint>,
-    effectiveRunMillis: Long,
+    nowMillis: Long,
     modifier: Modifier = Modifier,
 ) {
     val lineColor = WarmAmberDeep
     val dotColor = SuccessGreen
     val axisColor = MutedLine
     val textColor = TextMuted
-    val windowEndMillis = effectiveRunMillis.coerceAtLeast(points.lastOrNull()?.displayTimeMillis ?: 0L)
+    val windowEndMillis = nowMillis
     val windowStartMillis = (windowEndMillis - RATE_CHART_WINDOW_MILLIS).coerceAtLeast(0L)
     val windowDurationMillis = (windowEndMillis - windowStartMillis).coerceAtLeast(1L)
     val visible = points.filter { it.displayTimeMillis in windowStartMillis..windowEndMillis }

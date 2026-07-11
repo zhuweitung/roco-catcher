@@ -60,6 +60,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application), M
         }
 
         viewModelScope.launch {
+            val persistedTask = settingsStore.loadActiveTask()
+            if (persistedTask != null && CaptureTaskManager.currentState().config == null) {
+                val shouldResume = persistedTask.status == com.roco.catcher.model.TaskStatus.Running ||
+                    persistedTask.status == com.roco.catcher.model.TaskStatus.Connecting ||
+                    persistedTask.status == com.roco.catcher.model.TaskStatus.Reconnecting
+                if (CaptureTaskManager.restoreTask(persistedTask, resumeMonitoring = shouldResume) && shouldResume) {
+                    CaptureMonitorService.start(application)
+                }
+            }
+
             val recent = settingsStore.loadRecentTask()
             val target = recent.targetName?.let(::findTargetByName)
             _uiState.update {

@@ -44,16 +44,19 @@ data class PetDefinition(
     val chainName: String,
 )
 
+@Serializable
 sealed class CaptureTarget {
     abstract val displayName: String
     abstract val targetBaseConfIds: Set<String>
 
+    @Serializable
     data class Chain(
         override val displayName: String,
         override val targetBaseConfIds: Set<String>,
         val petNames: List<String>,
     ) : CaptureTarget()
 
+    @Serializable
     data class SinglePet(
         override val displayName: String,
         val petId: String,
@@ -77,6 +80,7 @@ data class TargetSearchResult(
     override fun toString(): String = "$title\n$subtitle"
 }
 
+@Serializable
 data class CaptureTaskConfig(
     val user: HelperUser,
     val target: CaptureTarget,
@@ -84,6 +88,7 @@ data class CaptureTaskConfig(
     val minRatePerMinute: Double,
 )
 
+@Serializable
 enum class TaskStatus(val label: String) {
     Idle("未开始"),
     Connecting("连接中"),
@@ -93,6 +98,7 @@ enum class TaskStatus(val label: String) {
     Failed("连接失败"),
 }
 
+@Serializable
 enum class LowSpeedKind {
     Disabled,
     WarmingUp,
@@ -105,19 +111,23 @@ enum class LowSpeedKind {
 const val LOW_SPEED_WARM_UP_MILLIS = 60_000L
 const val LOW_SPEED_PENDING_MILLIS = 30_000L
 
+@Serializable
 data class LowSpeedState(
     val kind: LowSpeedKind = LowSpeedKind.Disabled,
     val startedEffectiveMillis: Long = 0L,
 )
 
+@Serializable
 data class CaughtPetEvent(
     val gid: Long,
     val baseConfId: String,
     val petName: String?,
     val caughtAtMillis: Long,
+    val receivedAtMillis: Long = caughtAtMillis,
     val effectiveRunMillis: Long,
 )
 
+@Serializable
 data class RatePoint(
     val bucketIndex: Long,
     val displayTimeMillis: Long,
@@ -125,9 +135,11 @@ data class RatePoint(
     val ratePerMinute: Double,
 )
 
+@Serializable
 data class CaptureTaskState(
     val status: TaskStatus = TaskStatus.Idle,
     val config: CaptureTaskConfig? = null,
+    val taskStartedAtMillis: Long? = null,
     val caughtGids: Set<Long> = emptySet(),
     val caughtEvents: List<CaughtPetEvent> = emptyList(),
     val targetNotifySent: Boolean = false,

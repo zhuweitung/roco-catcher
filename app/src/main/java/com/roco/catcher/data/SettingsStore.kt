@@ -8,11 +8,13 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.roco.catcher.model.AppSettings
+import com.roco.catcher.model.CaptureTaskState
 import com.roco.catcher.model.RecentTaskSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 
 private val Context.settingsDataStore by preferencesDataStore(name = "roco_catcher_settings")
 
@@ -42,6 +44,13 @@ class SettingsStore(private val context: Context) {
 
     suspend fun loadRecentTask(): RecentTaskSettings = recentTaskFlow.first()
 
+    suspend fun loadActiveTask(): CaptureTaskState? {
+        val encoded = context.settingsDataStore.data.first()[KEY_ACTIVE_TASK_STATE] ?: return null
+        return runCatching { json.decodeFromString(CaptureTaskState.serializer(), encoded) }.getOrNull()
+    }
+
+    fun loadActiveTaskBlocking(): CaptureTaskState? = runBlocking { loadActiveTask() }
+
     suspend fun save(settings: AppSettings) {
         context.settingsDataStore.edit { prefs ->
             prefs[KEY_IP] = settings.helperIp.trim()
@@ -62,6 +71,12 @@ class SettingsStore(private val context: Context) {
         }
     }
 
+    suspend fun saveActiveTask(state: CaptureTaskState) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_ACTIVE_TASK_STATE] = json.encodeToString(CaptureTaskState.serializer(), state)
+        }
+    }
+
     private companion object {
         val KEY_IP = stringPreferencesKey("helper_ip")
         val KEY_PORT = intPreferencesKey("helper_port")
@@ -73,6 +88,11 @@ class SettingsStore(private val context: Context) {
         val KEY_RECENT_MIN_RATE = doublePreferencesKey("recent_min_rate")
         val KEY_RECENT_UID = stringPreferencesKey("recent_uid")
         val KEY_RECENT_TARGET_NAME = stringPreferencesKey("recent_target_name")
+        val KEY_ACTIVE_TASK_STATE = stringPreferencesKey("active_task_state")
+        val json = Json {
+            ignoreUnknownKeys = true
+            encodeDefaults = true
+        }
     }
 }
 
