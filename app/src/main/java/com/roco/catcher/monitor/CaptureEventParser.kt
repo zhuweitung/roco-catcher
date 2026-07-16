@@ -1,4 +1,4 @@
-package com.roco.catcher.monitor
+﻿package com.roco.catcher.monitor
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -15,9 +15,9 @@ data class PetChangedPayload(
 object CaptureEventParser {
     fun parse(rawJson: String, eventName: String? = null): PetChangedPayload? {
         val root = runCatching { json.parseToJsonElement(rawJson).jsonObject }.getOrNull() ?: return null
-        val type = root.stringValue("type") ?: eventName.orEmpty()
-        val data = root["data"]?.let { runCatching { it.jsonObject }.getOrNull() } ?: root
-        val looksLikePetPayload = data.containsKey("base_conf_id") && data.containsKey("gid")
+        val type = root.stringValue("type") ?: root.stringValue("event") ?: eventName.orEmpty()
+        val data = resolvePetData(root)
+        val looksLikePetPayload = isPetPayload(data)
 
         if (type.isNotBlank() && type != "pet_info.changed") {
             return null
@@ -37,6 +37,26 @@ object CaptureEventParser {
             gid = gid,
             occurredAtMillis = occurredAtMillis,
         )
+    }
+
+    /**
+     * Supports both legacy `{ data: pet }` and new `{ data: { data: pet, id } }` envelopes,
+     * as well as a bare pet payload object.
+     */
+    private fun resolvePetData(root: JsonObject): JsonObject {
+        var current = root
+        repeat(MAX_DATA_UNWRAP_DEPTH) {
+            if (isPetPayload(current)) {
+                return current
+            }
+            val nested = current["data"]?.let { runCatching { it.jsonObject }.getOrNull() } ?: return current
+            current = nested
+        }
+        return current
+    }
+
+    private fun isPetPayload(obj: JsonObject): Boolean {
+        return obj.containsKey("base_conf_id") && obj.containsKey("gid")
     }
 
     private fun JsonObject.stringValue(key: String): String? {
@@ -63,5 +83,6 @@ object CaptureEventParser {
     }
 
     private const val MILLIS_TIMESTAMP_THRESHOLD = 100_000_000_000L
+    private const val MAX_DATA_UNWRAP_DEPTH = 3
 }
 
