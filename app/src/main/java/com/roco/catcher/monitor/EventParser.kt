@@ -1,4 +1,4 @@
-﻿package com.roco.catcher.monitor
+package com.roco.catcher.monitor
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -6,37 +6,52 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 
-data class PetChangedPayload(
+data class PetCaughtPayload(
     val baseConfId: String,
     val gid: Long,
     val occurredAtMillis: Long?,
 )
 
-object CaptureEventParser {
-    fun parse(rawJson: String, eventName: String? = null): PetChangedPayload? {
-        val root = runCatching { json.parseToJsonElement(rawJson).jsonObject }.getOrNull() ?: return null
-        val type = root.stringValue("type") ?: root.stringValue("event") ?: eventName.orEmpty()
+data class ThrowBallPayload(
+    val ballId: Long?,
+    val occurredAtMillis: Long?,
+)
+
+object EventParser {
+    fun readEventName(rawJson: String): String? {
+        val root = parseRoot(rawJson) ?: return null
+        return root.stringValue("event") ?: root.stringValue("type")
+    }
+
+    fun parsePetCatch(rawJson: String): PetCaughtPayload? {
+        val root = parseRoot(rawJson) ?: return null
         val data = resolvePetData(root)
-        val looksLikePetPayload = isPetPayload(data)
-
-        if (type.isNotBlank() && type != "pet_info.changed") {
-            return null
-        }
-        if (type.isBlank() && eventName != "pet_info.changed" && !looksLikePetPayload) {
-            return null
-        }
-
         val baseConfId = data.stringValue("base_conf_id")?.takeIf { it.isNotBlank() } ?: return null
         val gid = data.longValue("gid")?.takeIf { it > 0L } ?: return null
-        val occurredAtMillis = (
-            data.longValue("add_time")
-                ?: data.objectValue("together_catch_info")?.longValue("catch_time")
-            )?.toEpochMillis()
-        return PetChangedPayload(
+        val occurredAtMillis =
+            (data.longValue("add_time") ?: data.objectValue("together_catch_info")
+                ?.longValue("catch_time"))?.toEpochMillis()
+        return PetCaughtPayload(
             baseConfId = baseConfId,
             gid = gid,
             occurredAtMillis = occurredAtMillis,
         )
+    }
+
+    fun parseThrowBall(rawJson: String): ThrowBallPayload? {
+        val root = parseRoot(rawJson) ?: return null
+        val data = root.objectValue("data") ?: root
+        val ballId = data.longValue("ball_id")
+        val occurredAtMillis = data.longValue("time")?.toEpochMillis()
+        if (ballId == null && occurredAtMillis == null) return null
+        return ThrowBallPayload(
+            ballId = ballId,
+            occurredAtMillis = occurredAtMillis,
+        )
+    }
+
+    private fun parseRoot(rawJson: String): JsonObject? {
+        return runCatching { json.parseToJsonElement(rawJson).jsonObject }.getOrNull()
     }
 
     /**
@@ -85,4 +100,3 @@ object CaptureEventParser {
     private const val MILLIS_TIMESTAMP_THRESHOLD = 100_000_000_000L
     private const val MAX_DATA_UNWRAP_DEPTH = 3
 }
-

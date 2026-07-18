@@ -2,6 +2,7 @@ package com.roco.catcher.monitor
 
 import com.roco.catcher.model.CaughtPetEvent
 import com.roco.catcher.model.RatePoint
+import com.roco.catcher.model.ThrowBallEvent
 
 object RateCalculator {
     private const val ONE_MINUTE_MILLIS = 60_000L
@@ -13,9 +14,17 @@ object RateCalculator {
     }
 
     fun currentRate(events: List<CaughtPetEvent>, nowMillis: Long): Double {
-        if (events.isEmpty()) return 0.0
+        return currentRateFromTimes(events.map { it.caughtAtMillis }, nowMillis)
+    }
+
+    fun currentThrowBallRate(events: List<ThrowBallEvent>, nowMillis: Long): Double {
+        return currentRateFromTimes(events.map { it.thrownAtMillis }, nowMillis)
+    }
+
+    fun currentRateFromTimes(eventTimesMillis: List<Long>, nowMillis: Long): Double {
+        if (eventTimesMillis.isEmpty()) return 0.0
         val start = (nowMillis - ONE_MINUTE_MILLIS).coerceAtLeast(0L)
-        return events.count { it.caughtAtMillis in start..nowMillis }.toDouble()
+        return eventTimesMillis.count { it in start..nowMillis }.toDouble()
     }
 
     fun history(events: List<CaughtPetEvent>): List<RatePoint> {
@@ -33,4 +42,3 @@ object RateCalculator {
         }
     }
 }
-

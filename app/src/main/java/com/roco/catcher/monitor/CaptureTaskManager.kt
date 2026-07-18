@@ -4,6 +4,7 @@ import android.util.Log
 import com.roco.catcher.model.CaptureTaskConfig
 import com.roco.catcher.model.CaptureTaskState
 import com.roco.catcher.model.CaughtPetEvent
+import com.roco.catcher.model.ThrowBallEvent
 import com.roco.catcher.model.LOW_SPEED_PENDING_MILLIS
 import com.roco.catcher.model.LOW_SPEED_WARM_UP_MILLIS
 import com.roco.catcher.model.LowSpeedKind
@@ -15,6 +16,8 @@ object CaptureTaskManager {
     private const val MAX_EVENT_HISTORY = 500
     private const val TASK_START_TOLERANCE_MILLIS = 1_000L
     private const val MAX_FUTURE_EVENT_SKEW_MILLIS = 5L * 60_000L
+    private const val EVENT_PET_INFO_CATCH = "pet_info.catch"
+    private const val EVENT_THROW_BALL = "throw_ball"
     private const val TAG = "CaptureTaskManager"
 
     private val listeners = CopyOnWriteArrayList<(CaptureTaskState) -> Unit>()
@@ -140,21 +143,43 @@ object CaptureTaskManager {
         petNameResolver: (String) -> String?,
         alertSink: CaptureAlertSink,
     ) {
-        val payload = CaptureEventParser.parse(rawJson, eventName) ?: return
+        val resolvedEventName = eventName?.takeIf { it.isNotBlank() }
+            ?: EventParser.readEventName(rawJson)
+            ?: return
         val receivedAtMillis = System.currentTimeMillis()
-        val occurredAtMillis = payload.occurredAtMillis
-            ?.takeIf { it <= receivedAtMillis + MAX_FUTURE_EVENT_SKEW_MILLIS }
-            ?: receivedAtMillis
-        handlePetChanged(
-            baseConfId = payload.baseConfId,
-            gid = payload.gid,
-            occurredAtMillis = occurredAtMillis,
-            receivedAtMillis = receivedAtMillis,
-            eventId = eventId,
-            connectionGeneration = connectionGeneration,
-            petNameResolver = petNameResolver,
-            alertSink = alertSink,
-        )
+
+        when (resolvedEventName) {
+            EVENT_PET_INFO_CATCH -> {
+                val payload = EventParser.parsePetCatch(rawJson) ?: return
+                val occurredAtMillis = payload.occurredAtMillis
+                    ?.takeIf { it <= receivedAtMillis + MAX_FUTURE_EVENT_SKEW_MILLIS }
+                    ?: receivedAtMillis
+                handlePetChanged(
+                    baseConfId = payload.baseConfId,
+                    gid = payload.gid,
+                    occurredAtMillis = occurredAtMillis,
+                    receivedAtMillis = receivedAtMillis,
+                    eventId = eventId,
+                    connectionGeneration = connectionGeneration,
+                    petNameResolver = petNameResolver,
+                    alertSink = alertSink,
+                )
+            }
+            EVENT_THROW_BALL -> {
+                val payload = EventParser.parseThrowBall(rawJson) ?: return
+                val occurredAtMillis = payload.occurredAtMillis
+                    ?.takeIf { it <= receivedAtMillis + MAX_FUTURE_EVENT_SKEW_MILLIS }
+                    ?: receivedAtMillis
+                handleThrowBall(
+                    ballId = payload.ballId,
+                    occurredAtMillis = occurredAtMillis,
+                    receivedAtMillis = receivedAtMillis,
+                    eventId = eventId,
+                    connectionGeneration = connectionGeneration,
+                )
+            }
+            else -> return
+        }
     }
 
     @Synchronized
@@ -183,6 +208,48 @@ object CaptureTaskManager {
         synchronized(this) {
             return RateCalculator.currentRate(state.caughtEvents, nowMillis)
         }
+    }
+
+    @Synchronized
+    private fun handleThrowBall(
+        ballId: Long?,
+        occurredAtMillis: Long,
+        receivedAtMillis: Long,
+        eventId: String?,
+        connectionGeneration: Long,
+    ) {
+        if (state.config == null) return
+        if (state.status != TaskStatus.Running) return
+        val taskStartedAtMillis = state.taskStartedAtMillis ?: return
+        if (occurredAtMillis < taskStartedAtMillis - TASK_START_TOLERANCE_MILLIS) {
+            Log.d(
+                TAG,
+                "Ignored pre-task throw_ball ballId=$ballId occurredAt=$occurredAtMillis " +
+                    "receivedAt=$receivedAtMillis eventId=$eventId generation=$connectionGeneration",
+            )
+            return
+        }
+
+        // No dedup for throw_ball: every event counts once.
+        val event = ThrowBallEvent(
+            ballId = ballId,
+            thrownAtMillis = occurredAtMillis,
+            receivedAtMillis = receivedAtMillis,
+        )
+        val events = (state.throwBallEvents + event)
+            .sortedBy(ThrowBallEvent::thrownAtMillis)
+            .takeLast(MAX_EVENT_HISTORY)
+        state = state.copy(
+            throwBallCount = state.throwBallCount + 1,
+            throwBallEvents = events,
+        )
+        Log.d(
+            TAG,
+            "Accepted throw_ball ballId=$ballId occurredAt=$occurredAtMillis " +
+                "receivedAt=$receivedAtMillis count=${state.throwBallCount} " +
+                "eventId=$eventId generation=$connectionGeneration",
+        )
+        notifyListenersLocked()
     }
 
     @Synchronized

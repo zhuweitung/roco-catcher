@@ -275,6 +275,8 @@ private fun MonitorScreen(
     val effectiveRunMillis = effectiveRunMillis(state, uiState.clockMillis)
     val averageRate = RateCalculator.averageRate(state.caughtCount, effectiveRunMillis)
     val currentRate = RateCalculator.currentRate(state.caughtEvents, uiState.clockMillis)
+    val averageThrowBallRate = RateCalculator.averageRate(state.throwBallCount, effectiveRunMillis)
+    val currentThrowBallRate = RateCalculator.currentThrowBallRate(state.throwBallEvents, uiState.clockMillis)
 
     Column(
         modifier = Modifier
@@ -352,6 +354,9 @@ private fun MonitorScreen(
             MetricRow("当前捕获", "${state.caughtCount}/$targetCount")
             MetricRow("平均速率", "${formatRate(averageRate)}/分钟")
             MetricRow("当前速率", "${formatRate(currentRate)}/分钟")
+            MetricRow("当前扔球总数", state.throwBallCount.toString())
+            MetricRow("平均扔球速率", "${formatRate(averageThrowBallRate)}/分钟")
+            MetricRow("当前扔球速率", "${formatRate(currentThrowBallRate)}/分钟")
             MetricRow("预计时间", estimatedCompletionLabel(targetCount, state.caughtCount, currentRate, uiState.clockMillis))
             MetricRow("低速提醒", lowSpeedLabel(state.lowSpeedState, effectiveRunMillis))
         }

@@ -1,10 +1,22 @@
 import com.android.build.gradle.internal.api.BaseVariantOutputImpl
+import java.util.Properties
 
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
+}
+
+val signingPropsFile = rootProject.file("keystore.properties")
+val signingProps = Properties().apply {
+    if (signingPropsFile.exists()) {
+        signingPropsFile.inputStream().use { load(it) }
+    }
+}
+
+fun prop(name: String, default: String = ""): String {
+    return (signingProps.getProperty(name) ?: default).trim()
 }
 
 android {
@@ -16,8 +28,42 @@ android {
         applicationId = "com.roco.catcher"
         minSdk = 26
         targetSdk = 36
-        versionCode = 7
-        versionName = "1.0.6"
+        versionCode = 8
+        versionName = "1.0.7"
+    }
+
+    signingConfigs {
+        // Fixed project keystore so debug/release installs can upgrade each other.
+        // Passwords live in root keystore.properties (gitignored).
+        create("shared") {
+            check(signingPropsFile.exists()) {
+                "Missing keystore.properties. Copy keystore.properties.example and fill secrets."
+            }
+            val storePath = prop("storeFile")
+            val storePwd = prop("storePassword")
+            val alias = prop("keyAlias")
+            val keyPwd = prop("keyPassword")
+            check(storePath.isNotEmpty() && storePwd.isNotEmpty() && alias.isNotEmpty() && keyPwd.isNotEmpty()) {
+                "keystore.properties is incomplete. Required: storeFile, storePassword, keyAlias, keyPassword."
+            }
+            storeFile = rootProject.file(storePath)
+            storePassword = storePwd
+            keyAlias = alias
+            keyPassword = keyPwd
+            check(storeFile?.exists() == true) {
+                "Keystore file not found: ${storeFile?.absolutePath}"
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("shared")
+        }
+        release {
+            signingConfig = signingConfigs.getByName("shared")
+            isMinifyEnabled = false
+        }
     }
 
     buildFeatures {

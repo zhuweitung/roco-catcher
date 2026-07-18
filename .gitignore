@@ -22,9 +22,10 @@ output/
 .externalNativeBuild/
 .cxx/
 
-# Signing keys
+# Signing keys (keep local copies stable for upgrade installs)
 *.jks
 *.keystore
+keystore.properties
 
 # OS files
 .DS_Store

@@ -128,6 +128,13 @@ data class CaughtPetEvent(
 )
 
 @Serializable
+data class ThrowBallEvent(
+    val ballId: Long?,
+    val thrownAtMillis: Long,
+    val receivedAtMillis: Long = thrownAtMillis,
+)
+
+@Serializable
 data class RatePoint(
     val bucketIndex: Long,
     val displayTimeMillis: Long,
@@ -142,6 +149,8 @@ data class CaptureTaskState(
     val taskStartedAtMillis: Long? = null,
     val caughtGids: Set<Long> = emptySet(),
     val caughtEvents: List<CaughtPetEvent> = emptyList(),
+    val throwBallCount: Int = 0,
+    val throwBallEvents: List<ThrowBallEvent> = emptyList(),
     val targetNotifySent: Boolean = false,
     val targetReachedAtMillis: Long? = null,
     val lowSpeedState: LowSpeedState = LowSpeedState(),
