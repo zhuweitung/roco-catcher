@@ -14,6 +14,12 @@ import com.roco.catcher.model.HelperUser
 import com.roco.catcher.model.TargetSearchResult
 import com.roco.catcher.monitor.CaptureMonitorService
 import com.roco.catcher.monitor.CaptureTaskManager
+import com.roco.catcher.update.AppUpdateInfo
+import com.roco.catcher.update.AppUpdateManager
+import com.roco.catcher.update.DownloadState
+import com.roco.catcher.update.UpdateCheckResult
+import java.io.File
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,16 +43,37 @@ data class MainUiState(
     val clockMillis: Long = System.currentTimeMillis(),
     val loadingUsers: Boolean = false,
     val message: String? = null,
+    val appVersionName: String = "",
+    val appVersionCode: Int = 0,
+    val updateChecking: Boolean = false,
+    val updateDownloading: Boolean = false,
+    val updateDownloadProgress: Float? = null,
+    val updateDownloadIndeterminate: Boolean = false,
+    val pendingUpdate: AppUpdateInfo? = null,
+    val downloadedApkPath: String? = null,
+    val showUpdateDialog: Boolean = false,
+    val downloadSourceIndex: Int = 0,
+    val downloadSourceLabel: String = "官方",
+    val downloadSourceCount: Int = 0,
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application), MainActions {
     private val settingsStore = SettingsStore(application)
     private val chains = EvolutionChainRepository(application)
     private val helperApi = HelperApi()
-    private val _uiState = MutableStateFlow(MainUiState(targetResults = chains.searchTargets("")))
+    private val updateManager = AppUpdateManager(application)
+    private val _uiState = MutableStateFlow(
+        MainUiState(
+            targetResults = chains.searchTargets(""),
+            appVersionName = updateManager.currentVersionName(),
+            appVersionCode = updateManager.currentVersionCode(),
+        ),
+    )
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
     private var taskUnsubscribe: (() -> Unit)? = null
     private var clockJob: Job? = null
+    private var updateJob: Job? = null
+    private var downloadSession: Int = 0
 
     init {
         taskUnsubscribe = CaptureTaskManager.addListener { taskState ->
@@ -93,6 +120,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), M
     override fun onCleared() {
         taskUnsubscribe?.invoke()
         clockJob?.cancel()
+        updateJob?.cancel()
         super.onCleared()
     }
 
@@ -284,6 +312,219 @@ class MainViewModel(application: Application) : AndroidViewModel(application), M
         _uiState.update { it.copy(message = null) }
     }
 
+    override fun checkForUpdate() {
+        if (_uiState.value.updateChecking || _uiState.value.updateDownloading) return
+
+        updateJob?.cancel()
+        _uiState.update {
+            it.copy(
+                updateChecking = true,
+                updateDownloadProgress = null,
+                updateDownloadIndeterminate = false,
+            )
+        }
+        updateJob = viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { updateManager.checkForUpdate() }
+            when (result) {
+                is UpdateCheckResult.UpToDate -> {
+                    _uiState.update {
+                        it.copy(
+                            updateChecking = false,
+                            pendingUpdate = null,
+                            showUpdateDialog = false,
+                            message = "已是最新版本 ${result.currentVersionName}",
+                        )
+                    }
+                }
+                is UpdateCheckResult.UpdateAvailable -> {
+                    val sources = updateManager.listDownloadSources(result.update.apkDownloadUrl)
+                    _uiState.update {
+                        it.copy(
+                            updateChecking = false,
+                            pendingUpdate = result.update,
+                            showUpdateDialog = true,
+                            downloadedApkPath = null,
+                            downloadSourceIndex = 0,
+                            downloadSourceLabel = sources.firstOrNull()?.label ?: "官方",
+                            downloadSourceCount = sources.size,
+                            message = "发现新版本 ${result.update.versionName}",
+                        )
+                    }
+                }
+                is UpdateCheckResult.Failed -> {
+                    _uiState.update {
+                        it.copy(
+                            updateChecking = false,
+                            message = result.message,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    override fun downloadUpdate() {
+        val state = _uiState.value
+        val update = state.pendingUpdate ?: return
+        startDownload(update, state.downloadSourceIndex)
+    }
+
+    override fun cancelUpdateDownload() {
+        if (!_uiState.value.updateDownloading) return
+        downloadSession += 1
+        updateJob?.cancel()
+        updateJob = null
+        _uiState.update {
+            it.copy(
+                updateDownloading = false,
+                updateDownloadProgress = null,
+                updateDownloadIndeterminate = false,
+                message = "已取消下载",
+            )
+        }
+    }
+
+    override fun switchUpdateDownloadSource() {
+        val state = _uiState.value
+        val update = state.pendingUpdate ?: return
+        val sources = updateManager.listDownloadSources(update.apkDownloadUrl)
+        if (sources.size <= 1) {
+            setMessage("没有可用的镜像源")
+            return
+        }
+
+        val nextIndex = (state.downloadSourceIndex + 1) % sources.size
+        val nextSource = sources[nextIndex]
+        if (state.updateDownloading) {
+            startDownload(update, nextIndex, statusMessage = "已切换到${nextSource.label}，重新下载...")
+        } else {
+            _uiState.update {
+                it.copy(
+                    downloadSourceIndex = nextIndex,
+                    downloadSourceLabel = nextSource.label,
+                    downloadSourceCount = sources.size,
+                    message = "已切换到${nextSource.label}",
+                )
+            }
+        }
+    }
+
+    override fun installDownloadedUpdate() {
+        val path = _uiState.value.downloadedApkPath
+        if (path.isNullOrBlank()) {
+            setMessage("请先下载更新包")
+            return
+        }
+        val file = File(path)
+        if (!file.exists()) {
+            setMessage("更新包不存在，请重新下载")
+            return
+        }
+        if (!updateManager.canRequestPackageInstalls()) {
+            runCatching {
+                getApplication<Application>().startActivity(updateManager.installPermissionSettingsIntent())
+            }
+            setMessage("请允许安装未知应用后，再点击安装")
+            return
+        }
+        runCatching { updateManager.install(file) }
+            .onFailure { error -> setMessage(error.message ?: "无法打开安装界面") }
+    }
+
+    override fun dismissUpdateDialog() {
+        _uiState.update { it.copy(showUpdateDialog = false) }
+    }
+
+    private fun startDownload(
+        update: AppUpdateInfo,
+        sourceIndex: Int,
+        statusMessage: String = "开始下载更新...",
+    ) {
+        if (_uiState.value.updateChecking) return
+
+        val sources = updateManager.listDownloadSources(update.apkDownloadUrl)
+        if (sources.isEmpty()) {
+            setMessage("下载地址为空")
+            return
+        }
+        val startIndex = sourceIndex.coerceIn(0, sources.lastIndex)
+        val startSource = sources[startIndex]
+
+        updateJob?.cancel()
+        _uiState.update {
+            it.copy(
+                updateDownloading = true,
+                updateDownloadProgress = 0f,
+                updateDownloadIndeterminate = true,
+                downloadedApkPath = null,
+                downloadSourceIndex = startIndex,
+                downloadSourceLabel = startSource.label,
+                downloadSourceCount = sources.size,
+                showUpdateDialog = true,
+                message = statusMessage,
+            )
+        }
+        val session = ++downloadSession
+        updateJob = viewModelScope.launch {
+            try {
+                updateManager.download(update, startSourceIndex = startIndex).collect { state ->
+                    if (session != downloadSession) return@collect
+                    when (state) {
+                        is DownloadState.Progress -> {
+                            _uiState.update {
+                                it.copy(
+                                    updateDownloadProgress = if (state.indeterminate) null else state.fraction,
+                                    updateDownloadIndeterminate = state.indeterminate,
+                                    downloadSourceIndex = state.sourceIndex,
+                                    downloadSourceLabel = state.sourceLabel.ifBlank { it.downloadSourceLabel },
+                                )
+                            }
+                        }
+                        is DownloadState.Success -> {
+                            _uiState.update {
+                                it.copy(
+                                    updateDownloading = false,
+                                    updateDownloadProgress = 1f,
+                                    updateDownloadIndeterminate = false,
+                                    downloadedApkPath = state.filePath,
+                                    downloadSourceIndex = state.sourceIndex,
+                                    downloadSourceLabel = state.sourceLabel.ifBlank { it.downloadSourceLabel },
+                                    showUpdateDialog = true,
+                                    message = "下载完成，准备安装",
+                                )
+                            }
+                            val file = File(state.filePath)
+                            if (updateManager.canRequestPackageInstalls()) {
+                                runCatching { updateManager.install(file) }
+                                    .onFailure { error -> setMessage(error.message ?: "无法打开安装界面") }
+                            } else {
+                                runCatching {
+                                    getApplication<Application>().startActivity(
+                                        updateManager.installPermissionSettingsIntent(),
+                                    )
+                                }
+                                setMessage("请允许安装未知应用后，再点击安装")
+                            }
+                        }
+                        is DownloadState.Failed -> {
+                            _uiState.update {
+                                it.copy(
+                                    updateDownloading = false,
+                                    updateDownloadProgress = null,
+                                    updateDownloadIndeterminate = false,
+                                    downloadSourceIndex = state.sourceIndex,
+                                    downloadSourceLabel = state.sourceLabel.ifBlank { it.downloadSourceLabel },
+                                    message = state.message,
+                                )
+                            }
+                        }
+                    }
+                }
+            } catch (_: CancellationException) {
+                // Cancelled by user or by switching download source.
+            }
+        }
+    }
     private fun buildTaskConfig(): CaptureTaskConfig? {
         val state = _uiState.value
         if (!state.settings.hasEndpoint) {
@@ -357,3 +598,4 @@ class MainViewModel(application: Application) : AndroidViewModel(application), M
         return if (value % 1.0 == 0.0) value.toInt().toString() else "%.1f".format(value)
     }
 }
+

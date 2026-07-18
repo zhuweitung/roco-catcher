@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -40,6 +41,13 @@ import androidx.compose.material.icons.filled.Pets
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material3.Button
@@ -50,6 +58,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -160,6 +169,12 @@ interface MainActions {
     fun retryTask()
     fun pauseTask()
     fun clearMessage()
+    fun checkForUpdate()
+    fun downloadUpdate()
+    fun cancelUpdateDownload()
+    fun switchUpdateDownloadSource()
+    fun installDownloadedUpdate()
+    fun dismissUpdateDialog()
 }
 
 @Composable
@@ -168,6 +183,7 @@ fun RocoCatcherApp(
     actions: MainActions,
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.CaptureTask) }
+    var showAbout by rememberSaveable { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     val focusManager = LocalFocusManager.current
     val inputFieldBounds = remember { mutableMapOf<String, Rect>() }
@@ -181,12 +197,32 @@ fun RocoCatcherApp(
 
     LaunchedEffect(selectedTab) {
         inputFieldBounds.clear()
+        if (selectedTab != AppTab.Settings) {
+            showAbout = false
+        }
+    }
+
+    if (uiState.showUpdateDialog && uiState.pendingUpdate != null) {
+        UpdateAvailableDialog(
+            uiState = uiState,
+            actions = actions,
+        )
     }
 
     Scaffold(
         modifier = Modifier.clearFocusOnTapOutsideInputs(focusManager, inputFieldBounds),
         snackbarHost = { SnackbarHost(snackbarHostState) },
-        bottomBar = { CompactBottomBar(selectedTab = selectedTab, onSelect = { selectedTab = it }) },
+        bottomBar = {
+            if (!showAbout) {
+                CompactBottomBar(
+                    selectedTab = selectedTab,
+                    onSelect = {
+                        selectedTab = it
+                        showAbout = false
+                    },
+                )
+            }
+        },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
         Column(
@@ -196,17 +232,23 @@ fun RocoCatcherApp(
                 .padding(horizontal = 16.dp)
                 .padding(top = 8.dp, bottom = 10.dp),
         ) {
-            when (selectedTab) {
-                AppTab.CaptureTask -> MonitorScreen(
+            when {
+                showAbout -> AboutScreen(
+                    uiState = uiState,
+                    actions = actions,
+                    onBack = { showAbout = false },
+                )
+                selectedTab == AppTab.CaptureTask -> MonitorScreen(
                     uiState = uiState,
                     actions = actions,
                     onOpenSettings = { selectedTab = AppTab.Settings },
                     inputFieldBounds = inputFieldBounds,
                 )
-                AppTab.Settings -> SettingsScreen(
+                selectedTab == AppTab.Settings -> SettingsScreen(
                     uiState = uiState,
                     actions = actions,
                     inputFieldBounds = inputFieldBounds,
+                    onOpenAbout = { showAbout = true },
                 )
             }
         }
@@ -722,6 +764,7 @@ private fun SettingsScreen(
     uiState: MainUiState,
     actions: MainActions,
     inputFieldBounds: MutableMap<String, Rect>,
+    onOpenAbout: () -> Unit,
 ) {
     var ip by rememberSaveable { mutableStateOf(uiState.settings.helperIp) }
     var port by rememberSaveable { mutableStateOf(uiState.settings.helperPort?.toString().orEmpty()) }
@@ -856,6 +899,23 @@ private fun SettingsScreen(
             }
         }
 
+        SectionCard(title = "其他") {
+            OutlinedButton(
+                onClick = onOpenAbout,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .semantics { contentDescription = "关于" },
+                colors = appSecondaryButtonColors(),
+                border = appSecondaryButtonBorder(),
+                shape = RoundedCornerShape(18.dp),
+            ) {
+                Icon(Icons.Filled.Info, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("关于")
+            }
+        }
+
         if (!notificationGranted) {
             SectionCard(title = "通知权限") {
                 WarningText("通知权限未开启，目标达成和低速提醒可能无法显示。")
@@ -961,6 +1021,281 @@ private fun openNotificationChannelSettings(context: Context, channelId: String)
             Toast.makeText(context, "无法打开通知设置", Toast.LENGTH_SHORT).show()
         }
     }
+}
+
+
+@Composable
+private fun AboutScreen(
+    uiState: MainUiState,
+    actions: MainActions,
+    onBack: () -> Unit,
+) {
+    val context = LocalContext.current
+    BackHandler(onBack = onBack)
+    val versionLabel = buildString {
+        append(uiState.appVersionName.ifBlank { "unknown" })
+        if (uiState.appVersionCode > 0) {
+            append(" (")
+            append(uiState.appVersionCode)
+            append(')')
+        }
+    }
+    val busy = uiState.updateChecking || uiState.updateDownloading
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.Filled.ArrowBack, contentDescription = "返回")
+            }
+            Text(
+                text = "关于",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = Ink,
+            )
+        }
+
+        SectionCard(title = "洛克捕手") {
+            Text(
+                text = "洛克捕手是一款 Android 捕获监控工具，用于连接局域网内的洛克助手服务，监听指定账号的精灵捕获事件，并展示捕获数量、速率和任务进度。",
+                color = Ink,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = "本项目仅提供 Android 客户端。服务端由洛克助手提供，使用前需先部署并启动洛克助手，同时确保手机能通过局域网访问其 IP 和端口。",
+                color = TextMuted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = {
+                    val intent = Intent(
+                        Intent.ACTION_VIEW,
+                        Uri.parse("https://github.com/zhuweitung/roco-catcher"),
+                    )
+                    runCatching { context.startActivity(intent) }
+                        .onFailure {
+                            Toast.makeText(context, "无法打开项目主页", Toast.LENGTH_SHORT).show()
+                        }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = appSecondaryButtonColors(),
+                border = appSecondaryButtonBorder(),
+                shape = RoundedCornerShape(18.dp),
+            ) {
+                Icon(Icons.Filled.Language, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("GitHub 项目主页")
+            }
+        }
+
+        SectionCard(title = "版本信息") {
+            MetricRow(label = "当前版本", value = versionLabel)
+            Spacer(Modifier.height(10.dp))
+            Button(
+                onClick = { actions.checkForUpdate() },
+                enabled = !busy,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                colors = appPrimaryButtonColors(),
+                shape = RoundedCornerShape(18.dp),
+            ) {
+                Icon(Icons.Filled.SystemUpdate, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    when {
+                        uiState.updateChecking -> "检查中..."
+                        uiState.updateDownloading -> "下载中..."
+                        else -> "检查更新"
+                    },
+                )
+            }
+
+            if (uiState.updateDownloading) {
+                Spacer(Modifier.height(12.dp))
+                if (uiState.updateDownloadIndeterminate || uiState.updateDownloadProgress == null) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                } else {
+                    LinearProgressIndicator(
+                        progress = { uiState.updateDownloadProgress.coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "下载进度 ${(uiState.updateDownloadProgress * 100).toInt()}%",
+                        color = TextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+
+            val pending = uiState.pendingUpdate
+            if (pending != null && !uiState.updateChecking) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "发现新版本 ${pending.versionName}",
+                    color = Ink,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (uiState.downloadedApkPath.isNullOrBlank()) {
+                        Button(
+                            onClick = { actions.downloadUpdate() },
+                            enabled = !busy,
+                            modifier = Modifier.weight(1f),
+                            colors = appPrimaryButtonColors(),
+                            shape = RoundedCornerShape(18.dp),
+                        ) {
+                            Text(if (uiState.updateDownloading) "下载中" else "下载更新")
+                        }
+                    } else {
+                        Button(
+                            onClick = { actions.installDownloadedUpdate() },
+                            enabled = !uiState.updateDownloading,
+                            modifier = Modifier.weight(1f),
+                            colors = appPrimaryButtonColors(),
+                            shape = RoundedCornerShape(18.dp),
+                        ) {
+                            Text("安装更新")
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            val url = pending.htmlUrl.ifBlank {
+                                "https://github.com/zhuweitung/roco-catcher/releases/latest"
+                            }
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                            runCatching { context.startActivity(intent) }
+                                .onFailure {
+                                    Toast.makeText(context, "无法打开发布页", Toast.LENGTH_SHORT).show()
+                                }
+                        },
+                        modifier = Modifier.weight(1f),
+                        colors = appSecondaryButtonColors(),
+                        border = appSecondaryButtonBorder(),
+                        shape = RoundedCornerShape(18.dp),
+                    ) {
+                        Text("手动下载")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpdateAvailableDialog(
+    uiState: MainUiState,
+    actions: MainActions,
+) {
+    val update = uiState.pendingUpdate ?: return
+    val notes = update.releaseNotes.ifBlank { "暂无更新说明" }
+    val busy = uiState.updateChecking || uiState.updateDownloading
+    val downloaded = !uiState.downloadedApkPath.isNullOrBlank()
+    val canSwitchSource = uiState.downloadSourceCount > 1 && !downloaded
+    val sourceLabel = uiState.downloadSourceLabel.ifBlank { "官方" }
+
+    AlertDialog(
+        onDismissRequest = {
+            if (!uiState.updateDownloading) {
+                actions.dismissUpdateDialog()
+            }
+        },
+        title = { Text("发现新版本 ${update.versionName}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = notes,
+                    color = Ink,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 12,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = if (uiState.updateDownloading) {
+                        "当前下载源：$sourceLabel"
+                    } else {
+                        "下载源：$sourceLabel"
+                    },
+                    color = TextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (uiState.updateDownloading) {
+                    if (uiState.updateDownloadIndeterminate || uiState.updateDownloadProgress == null) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    } else {
+                        LinearProgressIndicator(
+                            progress = { uiState.updateDownloadProgress.coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            text = "下载进度 ${(uiState.updateDownloadProgress * 100).toInt()}%",
+                            color = TextMuted,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+                if (canSwitchSource) {
+                    TextButton(
+                        onClick = { actions.switchUpdateDownloadSource() },
+                        enabled = !uiState.updateChecking,
+                    ) {
+                        Text(
+                            if (uiState.updateDownloading) {
+                                "切换镜像源（将中断当前下载）"
+                            } else {
+                                "切换镜像源"
+                            },
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    if (downloaded) {
+                        actions.installDownloadedUpdate()
+                    } else {
+                        actions.downloadUpdate()
+                    }
+                },
+                enabled = !busy || downloaded,
+            ) {
+                Text(
+                    when {
+                        uiState.updateDownloading -> "下载中"
+                        downloaded -> "安装"
+                        else -> "下载并安装"
+                    },
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = {
+                    if (uiState.updateDownloading) {
+                        actions.cancelUpdateDownload()
+                    } else {
+                        actions.dismissUpdateDialog()
+                    }
+                },
+            ) {
+                Text(if (uiState.updateDownloading) "取消" else "稍后")
+            }
+        },
+    )
 }
 
 @Composable
@@ -1219,3 +1554,4 @@ private fun lowSpeedCountdownLabel(
     val remainingSeconds = (remainingMillis + 999L) / 1_000L
     return "$label（剩余 ${remainingSeconds} 秒）"
 }
+
