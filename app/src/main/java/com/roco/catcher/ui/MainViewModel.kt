@@ -34,7 +34,7 @@ data class MainUiState(
     val settings: AppSettings = AppSettings(),
     val users: List<HelperUser> = emptyList(),
     val selectedUser: HelperUser? = null,
-    val selectedTarget: CaptureTarget? = null,
+    val selectedTargets: List<CaptureTarget> = emptyList(),
     val targetCountText: String = "",
     val minRateText: String = "",
     val targetQuery: String = "",
@@ -98,11 +98,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application), M
             }
 
             val recent = settingsStore.loadRecentTask()
-            val target = recent.targetName?.let(::findTargetByName)
+            val targets = CaptureTaskManager.currentState().config
+                ?.resolvedTargets()
+                .orEmpty()
+                .ifEmpty { recent.targets }
+                .ifEmpty { recent.resolvedTargetNames().mapNotNull(::findTargetByName) }
             _uiState.update {
                 it.copy(
-                    selectedTarget = target,
-                    targetQuery = target?.displayName.orEmpty(),
+                    selectedTargets = targets,
+                    targetQuery = "",
                     targetCountText = recent.targetCount.toString(),
                     minRateText = formatNumber(recent.minRatePerMinute),
                 )
@@ -137,22 +141,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application), M
 
     override fun updateTargetQuery(value: String) {
         _uiState.update {
-            val selectedTarget = it.selectedTarget.takeIf { target -> target?.displayName == value }
             it.copy(
                 targetQuery = value,
-                selectedTarget = selectedTarget,
                 targetResults = chains.searchTargets(value),
             )
         }
     }
 
     override fun selectTarget(result: TargetSearchResult) {
-        _uiState.update {
-            it.copy(
-                selectedTarget = result.target,
-                targetQuery = result.title,
-                targetResults = chains.searchTargets(result.title),
-                message = "已选择 ${result.target.displayName}",
+        _uiState.update { state ->
+            val exists = state.selectedTargets.any { sameTarget(it, result.target) }
+            val nextTargets = if (exists) {
+                state.selectedTargets.filterNot { sameTarget(it, result.target) }
+            } else {
+                state.selectedTargets + result.target
+            }
+            val message = if (exists) {
+                "已取消 ${result.target.displayName}"
+            } else {
+                "已添加 ${result.target.displayName}（${nextTargets.size}）"
+            }
+            state.copy(
+                selectedTargets = nextTargets,
+                targetQuery = "",
+                targetResults = chains.searchTargets(""),
+                message = message,
+            )
+        }
+    }
+
+    override fun removeTarget(target: CaptureTarget) {
+        _uiState.update { state ->
+            state.copy(
+                selectedTargets = state.selectedTargets.filterNot { sameTarget(it, target) },
             )
         }
     }
@@ -263,13 +284,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application), M
                 targetCount = config.targetCount,
                 minRate = config.minRatePerMinute,
                 uid = config.user.uid,
-                targetName = config.target.displayName,
+                targetName = config.resolvedTargets().firstOrNull()?.displayName,
+                targets = config.resolvedTargets(),
             )
         }
         CaptureTaskManager.startNewTask(config)
         CaptureMonitorService.start(getApplication())
         _uiState.update {
             it.copy(
+                selectedTargets = config.resolvedTargets(),
                 targetCountText = config.targetCount.toString(),
                 minRateText = formatNumber(config.minRatePerMinute),
                 message = null,
@@ -284,7 +307,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application), M
                 targetCount = config.targetCount,
                 minRate = config.minRatePerMinute,
                 uid = config.user.uid,
-                targetName = config.target.displayName,
+                targetName = config.resolvedTargets().firstOrNull()?.displayName,
+                targets = config.resolvedTargets(),
             )
         }
         CaptureTaskManager.continueCurrentTask(config)
@@ -536,11 +560,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application), M
             setMessage("请先读取并选择小洛克")
             return null
         }
-        val taskTarget = state.taskState.config?.target
-        val target = state.selectedTarget ?: taskTarget?.takeIf {
-            state.targetQuery.isBlank() || state.targetQuery == it.displayName
-        }
-        if (target == null) {
+        val targets = state.selectedTargets
+        if (targets.isEmpty()) {
             setMessage("请先选择捕获目标")
             return null
         }
@@ -554,7 +575,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application), M
             setMessage("最低速率必须大于等于 0")
             return null
         }
-        return CaptureTaskConfig(user, target, targetCount, minRate)
+        return CaptureTaskConfig(
+            user = user,
+            target = targets.first(),
+            targetCount = targetCount,
+            minRatePerMinute = minRate,
+            targets = targets,
+        )
     }
 
     private fun buildResumeTaskConfig(): CaptureTaskConfig? {
@@ -590,6 +617,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application), M
             ?.target
     }
 
+    private fun sameTarget(left: CaptureTarget, right: CaptureTarget): Boolean {
+        return when {
+            left is CaptureTarget.SinglePet && right is CaptureTarget.SinglePet ->
+                left.petId == right.petId
+            left is CaptureTarget.Chain && right is CaptureTarget.Chain ->
+                left.displayName == right.displayName
+            else -> left.displayName == right.displayName &&
+                left.targetBaseConfIds == right.targetBaseConfIds
+        }
+    }
+
     private fun setMessage(message: String) {
         _uiState.update { it.copy(message = message) }
     }
@@ -598,4 +636,3 @@ class MainViewModel(application: Application) : AndroidViewModel(application), M
         return if (value % 1.0 == 0.0) value.toInt().toString() else "%.1f".format(value)
     }
 }
-

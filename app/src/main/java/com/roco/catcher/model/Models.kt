@@ -22,7 +22,12 @@ data class RecentTaskSettings(
     val minRatePerMinute: Double = 0.0,
     val uid: String? = null,
     val targetName: String? = null,
-)
+    val targets: List<CaptureTarget> = emptyList(),
+) {
+    fun resolvedTargetNames(): List<String> {
+        return listOfNotNull(targetName?.takeIf { it.isNotBlank() })
+    }
+}
 
 @Serializable
 data class HelperUser(
@@ -83,10 +88,29 @@ data class TargetSearchResult(
 @Serializable
 data class CaptureTaskConfig(
     val user: HelperUser,
-    val target: CaptureTarget,
+    val target: CaptureTarget? = null,
     val targetCount: Int,
     val minRatePerMinute: Double,
-)
+    val targets: List<CaptureTarget> = emptyList(),
+) {
+    fun resolvedTargets(): List<CaptureTarget> {
+        return if (targets.isNotEmpty()) targets else listOfNotNull(target)
+    }
+
+    val displayName: String
+        get() {
+            val list = resolvedTargets()
+            return when {
+                list.isEmpty() -> ""
+                list.size == 1 -> list.first().displayName
+                list.size <= 3 -> list.joinToString("、") { it.displayName }
+                else -> list.take(2).joinToString("、") { it.displayName } + " 等${list.size}项"
+            }
+        }
+
+    val allTargetBaseConfIds: Set<String>
+        get() = resolvedTargets().flatMap { it.targetBaseConfIds }.toSet()
+}
 
 @Serializable
 enum class TaskStatus(val label: String) {

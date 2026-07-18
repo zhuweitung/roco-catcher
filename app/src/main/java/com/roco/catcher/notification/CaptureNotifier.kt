@@ -32,10 +32,10 @@ class CaptureNotifier(
         val notification = baseBuilder(NotificationChannels.TARGET_REACHED)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle("捕获目标已达成")
-            .setContentText("${config.target.displayName} 已捕获 ${state.caughtCount}/${config.targetCount}")
+            .setContentText("${config.displayName} 已捕获 ${state.caughtCount}/${config.targetCount}")
             .setStyle(
                 Notification.BigTextStyle().bigText(
-                    "${config.target.displayName} 已捕获 ${state.caughtCount}/${config.targetCount}，监听会继续运行，可手动暂停。",
+                    "${config.displayName} 已捕获 ${state.caughtCount}/${config.targetCount}，监听会继续运行，可手动暂停。",
                 ),
             )
             .setAutoCancel(true)
@@ -52,7 +52,7 @@ class CaptureNotifier(
         val notification = baseBuilder(NotificationChannels.LOW_SPEED)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setContentTitle("捕获速率偏低")
-            .setContentText("${config.target.displayName} 当前 $rate/分钟，低于 $minRate/分钟")
+            .setContentText("${config.displayName} 当前 $rate/分钟，低于 $minRate/分钟")
             .setAutoCancel(true)
             .build()
         notifyIfAllowed(LOW_SPEED_ID, notification)
@@ -64,7 +64,7 @@ class CaptureNotifier(
         val text = if (config == null) {
             "未开始监听"
         } else {
-            "${config.target.displayName} ${state.caughtCount}/${config.targetCount}，当前 $currentRate/分钟"
+            "${config.displayName} ${state.caughtCount}/${config.targetCount}，当前 $currentRate/分钟"
         }
         return baseBuilder(NotificationChannels.MONITOR_STATUS)
             .setSmallIcon(android.R.drawable.stat_sys_download_done)

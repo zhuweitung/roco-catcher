@@ -8,12 +8,14 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.roco.catcher.model.AppSettings
+import com.roco.catcher.model.CaptureTarget
 import com.roco.catcher.model.CaptureTaskState
 import com.roco.catcher.model.RecentTaskSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
 private val Context.settingsDataStore by preferencesDataStore(name = "roco_catcher_settings")
@@ -30,11 +32,19 @@ class SettingsStore(private val context: Context) {
     }
 
     val recentTaskFlow: Flow<RecentTaskSettings> = context.settingsDataStore.data.map { prefs ->
+        val targets = prefs[KEY_RECENT_TARGETS]
+            ?.let { encoded ->
+                runCatching {
+                    json.decodeFromString(ListSerializer(CaptureTarget.serializer()), encoded)
+                }.getOrNull()
+            }
+            .orEmpty()
         RecentTaskSettings(
             targetCount = (prefs[KEY_RECENT_TARGET_COUNT] ?: 1).coerceAtLeast(1),
             minRatePerMinute = (prefs[KEY_RECENT_MIN_RATE] ?: 0.0).coerceAtLeast(0.0),
             uid = prefs[KEY_RECENT_UID],
             targetName = prefs[KEY_RECENT_TARGET_NAME],
+            targets = targets,
         )
     }
 
@@ -62,12 +72,26 @@ class SettingsStore(private val context: Context) {
         }
     }
 
-    suspend fun saveRecentTask(targetCount: Int, minRate: Double, uid: String?, targetName: String?) {
+    suspend fun saveRecentTask(
+        targetCount: Int,
+        minRate: Double,
+        uid: String?,
+        targetName: String?,
+        targets: List<CaptureTarget> = emptyList(),
+    ) {
         context.settingsDataStore.edit { prefs ->
             prefs[KEY_RECENT_TARGET_COUNT] = targetCount
             prefs[KEY_RECENT_MIN_RATE] = minRate
             uid?.let { prefs[KEY_RECENT_UID] = it } ?: prefs.remove(KEY_RECENT_UID)
             targetName?.let { prefs[KEY_RECENT_TARGET_NAME] = it } ?: prefs.remove(KEY_RECENT_TARGET_NAME)
+            if (targets.isNotEmpty()) {
+                prefs[KEY_RECENT_TARGETS] = json.encodeToString(
+                    ListSerializer(CaptureTarget.serializer()),
+                    targets,
+                )
+            } else {
+                prefs.remove(KEY_RECENT_TARGETS)
+            }
         }
     }
 
@@ -88,6 +112,7 @@ class SettingsStore(private val context: Context) {
         val KEY_RECENT_MIN_RATE = doublePreferencesKey("recent_min_rate")
         val KEY_RECENT_UID = stringPreferencesKey("recent_uid")
         val KEY_RECENT_TARGET_NAME = stringPreferencesKey("recent_target_name")
+        val KEY_RECENT_TARGETS = stringPreferencesKey("recent_targets")
         val KEY_ACTIVE_TASK_STATE = stringPreferencesKey("active_task_state")
         val json = Json {
             ignoreUnknownKeys = true

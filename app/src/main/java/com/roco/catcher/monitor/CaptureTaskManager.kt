@@ -265,7 +265,7 @@ object CaptureTaskManager {
     ) {
         val config = state.config ?: return
         if (state.status != TaskStatus.Running) return
-        if (!config.target.targetBaseConfIds.contains(baseConfId)) return
+        if (!config.allTargetBaseConfIds.contains(baseConfId)) return
         if (state.caughtGids.contains(gid)) return
         val taskStartedAtMillis = state.taskStartedAtMillis ?: return
         if (occurredAtMillis < taskStartedAtMillis - TASK_START_TOLERANCE_MILLIS) {

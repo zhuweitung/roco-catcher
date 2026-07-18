@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -32,6 +34,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Numbers
@@ -60,6 +64,8 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.InputChip
+import androidx.compose.material3.InputChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -160,6 +166,7 @@ interface MainActions {
     fun updateMinRate(value: String)
     fun updateTargetQuery(value: String)
     fun selectTarget(result: com.roco.catcher.model.TargetSearchResult)
+    fun removeTarget(target: com.roco.catcher.model.CaptureTarget)
     fun selectUser(user: HelperUser)
     fun saveSettings(helperIp: String, helperPortText: String, targetNotifyEnabled: Boolean, lowSpeedNotifyEnabled: Boolean)
     fun testConnection(helperIp: String, helperPortText: String, targetNotifyEnabled: Boolean, lowSpeedNotifyEnabled: Boolean)
@@ -386,7 +393,15 @@ private fun MonitorScreen(
         SectionCard(title = "任务状态") {
             MetricRow("状态", state.status.label)
             MetricRow("小洛克", uiState.selectedUser?.toString() ?: state.config?.user?.toString() ?: "未选择")
-            MetricRow("目标", uiState.selectedTarget?.displayName ?: state.config?.target?.displayName ?: "未选择")
+            MetricRow(
+                "目标",
+                when {
+                    state.config != null -> state.config.displayName
+                    uiState.selectedTargets.isNotEmpty() ->
+                        uiState.selectedTargets.joinToString("、") { it.displayName }
+                    else -> "未选择"
+                },
+            )
             MetricRow("运行时长", formatDuration(effectiveRunMillis))
             state.errorMessage?.let { WarningText(it) }
         }
@@ -514,7 +529,7 @@ private fun UserDropdown(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun TargetSearchDropdown(
     uiState: MainUiState,
@@ -522,56 +537,128 @@ private fun TargetSearchDropdown(
     inputFieldBounds: MutableMap<String, Rect>,
 ) {
     var expanded by remember { mutableStateOf(false) }
-    val taskTargetName = uiState.taskState.config?.target?.displayName
-    val selectedTargetName = uiState.selectedTarget?.displayName
-        ?: taskTargetName?.takeIf { uiState.targetQuery.isBlank() || uiState.targetQuery == it }
+    val selectedTargets = uiState.selectedTargets
+    val placeholder = when {
+        selectedTargets.isEmpty() -> "输入精灵或进化链名称（可多选）"
+        else -> "已选 ${selectedTargets.size} 项，继续搜索添加"
+    }
 
     LabeledField("捕获目标") {
-        ExposedDropdownMenuBox(
-            expanded = expanded,
-            onExpandedChange = { expanded = it },
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            OutlinedTextField(
-                value = uiState.targetQuery,
-                onValueChange = {
-                    actions.updateTargetQuery(it)
-                    expanded = true
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .trackInputFieldBounds(inputFieldBounds, "target_search")
-                    .menuAnchor()
-                    .semantics { contentDescription = "捕获目标" },
-                placeholder = { Text(selectedTargetName ?: "输入精灵或进化链名称") },
-                leadingIcon = { Icon(Icons.Filled.Pets, contentDescription = null) },
-                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                singleLine = true,
-                shape = RoundedCornerShape(22.dp),
-                colors = appTextFieldColors(),
-            )
-
-            ExposedDropdownMenu(
-                expanded = expanded && uiState.targetResults.isNotEmpty(),
-                onDismissRequest = { expanded = false },
-                modifier = Modifier
-                    .exposedDropdownSize()
-                    .heightIn(max = 320.dp),
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            ExposedDropdownMenuBox(
+                expanded = expanded,
+                onExpandedChange = { expanded = it },
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                uiState.targetResults.forEach { result ->
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                text = result.title,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        },
-                        onClick = {
-                            actions.selectTarget(result)
-                            expanded = false
-                        },
-                    )
+                OutlinedTextField(
+                    value = uiState.targetQuery,
+                    onValueChange = {
+                        actions.updateTargetQuery(it)
+                        expanded = true
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .trackInputFieldBounds(inputFieldBounds, "target_search")
+                        .menuAnchor()
+                        .semantics { contentDescription = "捕获目标" },
+                    placeholder = { Text(placeholder) },
+                    leadingIcon = { Icon(Icons.Filled.Pets, contentDescription = null) },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(22.dp),
+                    colors = appTextFieldColors(),
+                )
+
+                ExposedDropdownMenu(
+                    expanded = expanded && uiState.targetResults.isNotEmpty(),
+                    onDismissRequest = { expanded = false },
+                    modifier = Modifier
+                        .exposedDropdownSize()
+                        .heightIn(max = 320.dp),
+                ) {
+                    uiState.targetResults.forEach { result ->
+                        val selected = selectedTargets.any { target ->
+                            when {
+                                target is com.roco.catcher.model.CaptureTarget.SinglePet &&
+                                    result.target is com.roco.catcher.model.CaptureTarget.SinglePet ->
+                                    target.petId == result.target.petId
+                                target is com.roco.catcher.model.CaptureTarget.Chain &&
+                                    result.target is com.roco.catcher.model.CaptureTarget.Chain ->
+                                    target.displayName == result.target.displayName
+                                else ->
+                                    target.displayName == result.target.displayName &&
+                                        target.targetBaseConfIds == result.target.targetBaseConfIds
+                            }
+                        }
+                        DropdownMenuItem(
+                            text = {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = result.title,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = result.subtitle,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                    if (selected) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Check,
+                                            contentDescription = "已选择",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                        )
+                                    }
+                                }
+                            },
+                            onClick = {
+                                actions.selectTarget(result)
+                            },
+                        )
+                    }
+                }
+            }
+
+            if (selectedTargets.isNotEmpty()) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    selectedTargets.forEach { target ->
+                        InputChip(
+                            selected = true,
+                            onClick = { actions.removeTarget(target) },
+                            label = {
+                                Text(
+                                    text = target.displayName,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            },
+                            trailingIcon = {
+                                Icon(
+                                    imageVector = Icons.Filled.Close,
+                                    contentDescription = "移除 ${target.displayName}",
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            },
+                            colors = InputChipDefaults.inputChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                selectedTrailingIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            ),
+                        )
+                    }
                 }
             }
         }
@@ -1554,4 +1641,3 @@ private fun lowSpeedCountdownLabel(
     val remainingSeconds = (remainingMillis + 999L) / 1_000L
     return "$label（剩余 ${remainingSeconds} 秒）"
 }
-
