@@ -10,11 +10,6 @@ data class AppSettings(
 ) {
     val hasEndpoint: Boolean
         get() = helperIp.isNotBlank() && helperPort != null && helperPort in 1..65535
-
-    fun baseUrl(): String {
-        val port = helperPort ?: error("helperPort is not configured")
-        return "http://${helperIp.trim()}:$port"
-    }
 }
 
 data class RecentTaskSettings(

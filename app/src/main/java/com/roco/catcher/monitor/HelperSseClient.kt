@@ -1,5 +1,6 @@
 package com.roco.catcher.monitor
 
+import com.roco.catcher.data.HelperHttp
 import com.roco.catcher.model.AppSettings
 import com.roco.catcher.model.HelperUser
 import okhttp3.OkHttpClient
@@ -9,13 +10,12 @@ import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
 import java.io.IOException
-import java.util.concurrent.TimeUnit
 
 class HelperSseClient(
     private val settings: AppSettings,
     private val user: HelperUser,
     private val listener: Listener,
-    private val client: OkHttpClient = defaultClient,
+    private val client: OkHttpClient = HelperHttp.sseClient(),
 ) {
     interface Listener {
         fun onOpen()
@@ -27,14 +27,28 @@ class HelperSseClient(
     @Volatile
     private var eventSource: EventSource? = null
 
+    @Volatile
+    private var opened: Boolean = false
+
+    @Volatile
+    private var cancelled: Boolean = false
+
     @Throws(IOException::class)
     fun connect() {
         if (!settings.hasEndpoint) {
             throw IOException("请先配置洛克助手 IP 和端口")
         }
 
+        cancelled = false
+        opened = false
+        connectTo(HelperHttp.baseUrls(settings).first())
+    }
+
+    private fun connectTo(baseUrl: String) {
+        if (cancelled) return
+
         val request = Request.Builder()
-            .url("${settings.baseUrl()}/api/events?uid=${user.uid}")
+            .url("$baseUrl/api/events?uid=${user.uid}")
             .header("Accept", "text/event-stream")
             .header("Cache-Control", "no-cache")
             .build()
@@ -44,6 +58,8 @@ class HelperSseClient(
                 request,
                 object : EventSourceListener() {
                     override fun onOpen(eventSource: EventSource, response: Response) {
+                        opened = true
+                        HelperHttp.rememberSuccessfulBaseUrl(settings, baseUrl)
                         listener.onOpen()
                     }
 
@@ -57,10 +73,21 @@ class HelperSseClient(
                     }
 
                     override fun onClosed(eventSource: EventSource) {
-                        listener.onClosed()
+                        if (!cancelled) {
+                            listener.onClosed()
+                        }
                     }
 
                     override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
+                        if (cancelled) return
+
+                        // 仅在尚未成功建立连接时尝试另一协议（http/https）
+                        val fallback = nextBaseUrl(baseUrl)
+                        if (!opened && fallback != null) {
+                            connectTo(fallback)
+                            return
+                        }
+
                         val status = response?.let { "HTTP ${it.code}" }
                         listener.onFailure(t?.message ?: status ?: "SSE 连接异常")
                     }
@@ -68,17 +95,16 @@ class HelperSseClient(
             )
     }
 
-    fun cancel() {
-        eventSource?.cancel()
-        eventSource = null
+    private fun nextBaseUrl(current: String): String? {
+        val urls = HelperHttp.baseUrls(settings)
+        val index = urls.indexOf(current)
+        return if (index >= 0 && index < urls.lastIndex) urls[index + 1] else null
     }
 
-    private companion object {
-        val defaultClient: OkHttpClient = OkHttpClient.Builder()
-            .connectTimeout(8, TimeUnit.SECONDS)
-            .readTimeout(0, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(true)
-            .build()
+    fun cancel() {
+        cancelled = true
+        eventSource?.cancel()
+        eventSource = null
     }
 }
 

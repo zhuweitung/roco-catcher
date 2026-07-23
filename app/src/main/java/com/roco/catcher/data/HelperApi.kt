@@ -7,10 +7,9 @@ import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
-import java.util.concurrent.TimeUnit
 
 class HelperApi(
-    private val client: OkHttpClient = defaultClient,
+    private val client: OkHttpClient = HelperHttp.apiClient(),
 ) {
     @Throws(IOException::class)
     fun fetchUsers(settings: AppSettings): List<HelperUser> {
@@ -18,20 +17,22 @@ class HelperApi(
             throw IOException("请先配置洛克助手 IP 和端口")
         }
 
-        val request = Request.Builder()
-            .url("${settings.baseUrl()}/api/users")
-            .header("Accept", "application/json")
-            .get()
-            .build()
+        return HelperHttp.withBaseUrls(settings) { baseUrl ->
+            val request = Request.Builder()
+                .url("$baseUrl/api/users")
+                .header("Accept", "application/json")
+                .get()
+                .build()
 
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw IOException("读取小洛克失败：HTTP ${response.code}")
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw IOException("读取小洛克失败：HTTP ${response.code}")
+                }
+                val body = response.body?.string().orEmpty()
+                json.decodeFromString<List<ApiUserDto>>(body)
+                    .filter { it.uid.isNotBlank() && it.name.isNotBlank() }
+                    .map { HelperUser(uid = it.uid, name = it.name, avatar = it.avatar) }
             }
-            val body = response.body?.string().orEmpty()
-            return json.decodeFromString<List<ApiUserDto>>(body)
-                .filter { it.uid.isNotBlank() && it.name.isNotBlank() }
-                .map { HelperUser(uid = it.uid, name = it.name, avatar = it.avatar) }
         }
     }
 
@@ -39,11 +40,6 @@ class HelperApi(
         val json = Json {
             ignoreUnknownKeys = true
         }
-
-        val defaultClient: OkHttpClient = OkHttpClient.Builder()
-            .connectTimeout(5, TimeUnit.SECONDS)
-            .readTimeout(8, TimeUnit.SECONDS)
-            .build()
     }
 }
 
